@@ -19,6 +19,7 @@ jobs:
   changes:
     name: Detect affected areas
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       frontend: ${{ github.event_name != 'pull_request' || steps.filter.outputs.frontend == 'true' }}
       rust: ${{ github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' }}
@@ -141,27 +142,36 @@ jobs:
       - frontend
       - rust
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Verify upstream results
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
+          FRONTEND_APPLICABLE: ${{ needs.changes.outputs.frontend }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
+          RUST_APPLICABLE: ${{ needs.changes.outputs.rust }}
           RUST_RESULT: ${{ needs.rust.result }}
         run: |
-          echo "changes=${CHANGES_RESULT} frontend=${FRONTEND_RESULT} rust=${RUST_RESULT}"
+          echo "changes=${CHANGES_RESULT} frontend_applicable=${FRONTEND_APPLICABLE} frontend=${FRONTEND_RESULT} rust_applicable=${RUST_APPLICABLE} rust=${RUST_RESULT}"
 
           if [ "${CHANGES_RESULT}" != "success" ]; then
             echo "Path detection did not succeed."
             exit 1
           fi
 
-          case "${FRONTEND_RESULT}" in
-            success|skipped) ;;
-            *) echo "Frontend checks did not succeed."; exit 1 ;;
-          esac
+          verify_result() {
+            name="$1"
+            applicable="$2"
+            result="$3"
 
-          case "${RUST_RESULT}" in
-            success|skipped) ;;
-            *) echo "Rust checks did not succeed."; exit 1 ;;
-          esac
+            case "${applicable}:${result}" in
+              true:success|false:skipped) ;;
+              true:*) echo "${name} was applicable but did not succeed."; exit 1 ;;
+              false:*) echo "${name} was not applicable but was not skipped."; exit 1 ;;
+              *) echo "${name} applicability was invalid: ${applicable}."; exit 1 ;;
+            esac
+          }
+
+          verify_result "Frontend" "${FRONTEND_APPLICABLE}" "${FRONTEND_RESULT}"
+          verify_result "Rust" "${RUST_APPLICABLE}" "${RUST_RESULT}"
