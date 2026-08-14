@@ -1,0 +1,69 @@
+name: Rust PR quality
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "rust-toolchain"
+      - "rust-toolchain.toml"
+      - "frontend/src-tauri/**"
+      - "llama-helper/**"
+      - ".github/workflows/rust-quality.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-quality:
+    name: Locked workspace tests
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: "3.31.x"
+
+      - name: Verify CMake
+        run: cmake --version
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Cache FFmpeg sidecar
+        uses: actions/cache@v4
+        with:
+          path: frontend/src-tauri/binaries/ffmpeg-*.exe
+          key: ${{ runner.os }}-ffmpeg-${{ hashFiles('frontend/src-tauri/build.rs', 'frontend/src-tauri/build/ffmpeg.rs') }}
+
+      - name: Build llama-helper sidecar
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force frontend/src-tauri/binaries | Out-Null
+          cargo build --locked -p llama-helper
+          Copy-Item -Force target/debug/llama-helper.exe frontend/src-tauri/binaries/llama-helper-x86_64-pc-windows-msvc.exe
+
+      - name: Provide placeholder frontendDist
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force frontend/out | Out-Null
+          Set-Content frontend/out/index.html "<!doctype html><title>ci</title>"
+
+      - name: Run locked workspace tests
+        run: cargo test --workspace --locked
