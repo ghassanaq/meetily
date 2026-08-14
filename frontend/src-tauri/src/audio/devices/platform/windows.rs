@@ -5,7 +5,11 @@ use log::{debug, info, warn};
 use crate::audio::devices::configuration::{AudioDevice, DeviceType};
 
 /// Configure Windows audio devices using WASAPI
+///
+/// Must be called from the audio host thread; see [`crate::audio::host_thread`].
 pub fn configure_windows_audio(host: &cpal::Host) -> Result<Vec<AudioDevice>> {
+    crate::audio::host_thread::debug_assert_on_audio_host_thread();
+
     let mut devices = Vec::new();
 
     // Get WASAPI devices
@@ -94,7 +98,11 @@ pub fn configure_windows_audio(host: &cpal::Host) -> Result<Vec<AudioDevice>> {
 }
 
 /// Get Windows device and configuration using WASAPI
+///
+/// Must be called from the audio host thread; see [`crate::audio::host_thread`].
 pub fn get_windows_device(audio_device: &AudioDevice) -> Result<(cpal::Device, cpal::SupportedStreamConfig)> {
+    crate::audio::host_thread::debug_assert_on_audio_host_thread();
+
     let wasapi_host = cpal::host_from_id(cpal::HostId::Wasapi)
         .map_err(|e| anyhow!("Failed to create WASAPI host: {}", e))?;
 

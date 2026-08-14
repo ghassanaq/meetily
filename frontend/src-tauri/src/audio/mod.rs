@@ -8,6 +8,7 @@ pub mod vad;
 // Modularized device management
 pub mod devices;
 pub mod capture;
+pub mod host_thread;
 pub mod permissions;
 
 // NEW: Device detection and diagnostics for adaptive buffering
@@ -50,6 +51,9 @@ pub mod retranscription;
 
 // Import module (import external audio files as new meetings)
 pub mod import;
+
+// Every cpal query must run here; see the module docs for the COM lifetime bug.
+pub use host_thread::on_audio_host_thread;
 
 pub use devices::{
     default_input_device, default_output_device, get_device_and_config, list_audio_devices,

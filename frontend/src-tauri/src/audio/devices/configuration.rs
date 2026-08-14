@@ -111,6 +111,16 @@ pub fn parse_audio_device(name: &str) -> Result<AudioDevice> {
 pub async fn get_device_and_config(
     audio_device: &AudioDevice,
 ) -> Result<(cpal::Device, cpal::SupportedStreamConfig)> {
+    // Owned copy so the lookup can run on the audio host thread.
+    let audio_device = audio_device.clone();
+    crate::audio::host_thread::on_audio_host_thread(move || {
+        get_device_and_config_inner(&audio_device)
+    })
+}
+
+fn get_device_and_config_inner(
+    audio_device: &AudioDevice,
+) -> Result<(cpal::Device, cpal::SupportedStreamConfig)> {
     #[cfg(target_os = "windows")]
     {
         return super::platform::get_windows_device(audio_device);

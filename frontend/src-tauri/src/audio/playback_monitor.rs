@@ -31,21 +31,30 @@ pub async fn get_active_audio_output() -> Result<AudioOutputInfo> {
     }
 }
 
-#[cfg(target_os = "macos")]
-async fn get_macos_output() -> Result<AudioOutputInfo> {
+/// Read the default output device's name and sample rate.
+///
+/// Runs on the audio host thread so cpal's cached COM enumerator is never left
+/// owned by a thread that is about to exit; see [`crate::audio::host_thread`].
+fn default_output_name_and_rate() -> Result<(String, Option<u32>)> {
     use cpal::traits::{DeviceTrait, HostTrait};
 
-    // Get default output device using cpal
-    let host = cpal::default_host();
-    let device = host.default_output_device()
-        .ok_or_else(|| anyhow::anyhow!("No default output device found"))?;
+    crate::audio::host_thread::on_audio_host_thread(|| {
+        let host = cpal::default_host();
+        let device = host.default_output_device()
+            .ok_or_else(|| anyhow::anyhow!("No default output device found"))?;
 
-    let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+        let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+        let sample_rate = device.default_output_config()
+            .ok()
+            .map(|config| config.sample_rate().0);
 
-    // Get sample rate
-    let sample_rate = device.default_output_config()
-        .ok()
-        .map(|config| config.sample_rate().0);
+        Ok((device_name, sample_rate))
+    })
+}
+
+#[cfg(target_os = "macos")]
+async fn get_macos_output() -> Result<AudioOutputInfo> {
+    let (device_name, sample_rate) = default_output_name_and_rate()?;
 
     // Heuristic: Check if device name contains bluetooth-related keywords
     let name_lower = device_name.to_lowercase();
@@ -80,17 +89,7 @@ async fn get_macos_output() -> Result<AudioOutputInfo> {
 
 #[cfg(target_os = "windows")]
 async fn get_windows_output() -> Result<AudioOutputInfo> {
-    use cpal::traits::{DeviceTrait, HostTrait};
-
-    let host = cpal::default_host();
-    let device = host.default_output_device()
-        .ok_or_else(|| anyhow::anyhow!("No default output device found"))?;
-
-    let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-
-    let sample_rate = device.default_output_config()
-        .ok()
-        .map(|config| config.sample_rate().0);
+    let (device_name, sample_rate) = default_output_name_and_rate()?;
 
     // Windows Bluetooth detection
     let name_lower = device_name.to_lowercase();
@@ -119,17 +118,7 @@ async fn get_windows_output() -> Result<AudioOutputInfo> {
 
 #[cfg(target_os = "linux")]
 async fn get_linux_output() -> Result<AudioOutputInfo> {
-    use cpal::traits::{DeviceTrait, HostTrait};
-
-    let host = cpal::default_host();
-    let device = host.default_output_device()
-        .ok_or_else(|| anyhow::anyhow!("No default output device found"))?;
-
-    let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-
-    let sample_rate = device.default_output_config()
-        .ok()
-        .map(|config| config.sample_rate().0);
+    let (device_name, sample_rate) = default_output_name_and_rate()?;
 
     // Linux Bluetooth detection (PulseAudio/PipeWire naming)
     let name_lower = device_name.to_lowercase();

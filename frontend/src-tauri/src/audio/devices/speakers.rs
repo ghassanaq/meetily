@@ -3,9 +3,14 @@ use cpal::traits::{HostTrait, DeviceTrait};
 use log::{info, warn};
 
 use super::configuration::{AudioDevice, DeviceType};
+use crate::audio::host_thread::on_audio_host_thread;
 
 /// Get the default output (speaker/system audio) device for the system
 pub fn default_output_device() -> Result<AudioDevice> {
+    on_audio_host_thread(default_output_device_inner)
+}
+
+fn default_output_device_inner() -> Result<AudioDevice> {
     #[cfg(target_os = "macos")]
     {
         // Use default host for all macOS devices
@@ -59,6 +64,10 @@ pub fn default_output_device() -> Result<AudioDevice> {
 ///
 /// Returns None if no built-in speaker found
 pub fn find_builtin_output_device() -> Result<Option<AudioDevice>> {
+    on_audio_host_thread(find_builtin_output_device_inner)
+}
+
+fn find_builtin_output_device_inner() -> Result<Option<AudioDevice>> {
     let host = cpal::default_host();
 
     // Built-in speaker name patterns (platform-specific)

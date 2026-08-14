@@ -115,13 +115,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore] // Only run manually as it requires audio hardware
     async fn test_list_system_audio_devices() {
         let devices = list_system_audio_devices_command().await;
         match devices {
             Ok(device_list) => {
                 println!("System audio devices: {:?}", device_list);
-                assert!(device_list.len() >= 0); // Should at least not crash
             }
             Err(e) => {
                 println!("Error listing devices: {}", e);
@@ -135,5 +133,45 @@ mod tests {
         let has_permission = check_system_audio_permissions_command().await;
         println!("Has system audio permissions: {}", has_permission);
         // This is mainly a smoke test to ensure it doesn't crash
+    }
+    /// Regression test for the `cargo test --workspace` abort with exit code
+    /// 0xC0000005 (STATUS_ACCESS_VIOLATION) on Windows.
+    ///
+    /// The two commands above used to be enough to kill the whole test binary:
+    /// `check_system_audio_permissions_command` builds a cpal device iterator
+    /// and drops it undrained, and libtest runs every test on its own
+    /// short-lived thread. When that thread exited, its thread-local COM guard
+    /// ran `CoUninitialize`, COM unloaded the audio in-proc server, and cpal's
+    /// process-global cached `IMMDeviceEnumerator` was left dangling - so
+    /// `list_system_audio_devices_command` faulted reading its vtable.
+    /// See `crate::audio::host_thread` and https://github.com/RustAudio/cpal/issues/1302.
+    ///
+    /// This test forces that sequence into a single test so it does not depend
+    /// on test ordering. A regression aborts the process rather than failing an
+    /// assertion - an access violation is not catchable in-process.
+    ///
+    /// Hardware-independent: it asserts nothing about which or how many devices
+    /// exist, so it is valid on a machine with no usable audio endpoints (an RDP
+    /// session without audio redirection, a VM, or a disabled output device).
+    #[test]
+    fn probe_then_enumerate_across_thread_exits_does_not_crash() {
+        // Thread 1: probe permissions, then exit (runs CoUninitialize).
+        std::thread::spawn(|| {
+            let granted = check_system_audio_permissions();
+            println!("permission probe: {}", granted);
+        })
+        .join()
+        .expect("permission probe thread panicked");
+
+        // Thread 2: enumerate against the now-orphaned cached enumerator.
+        let devices = std::thread::spawn(list_system_audio_devices)
+            .join()
+            .expect("enumeration thread panicked");
+
+        match devices {
+            Ok(names) => println!("enumerated {} system audio devices", names.len()),
+            // An error is fine - a hard crash is not.
+            Err(e) => println!("enumeration returned an error (acceptable): {}", e),
+        }
     }
 }
