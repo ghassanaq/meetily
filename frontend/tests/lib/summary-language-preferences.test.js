@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
-const invokeMock = mock(async () => null);
+const { invokeMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn(async () => null),
+}));
 
-mock.module("@tauri-apps/api/core", () => ({
+vi.mock("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
 }));
 
