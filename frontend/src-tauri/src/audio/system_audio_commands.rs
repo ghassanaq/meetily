@@ -115,6 +115,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore] // Only run manually as it requires audio hardware
     async fn test_list_system_audio_devices() {
         let devices = list_system_audio_devices_command().await;
         match devices {
