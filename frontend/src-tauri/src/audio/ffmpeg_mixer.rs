@@ -143,7 +143,7 @@ impl SourceBuffer {
             );
 
             // Gap threshold: 2x expected chunk duration
-            if gap_duration > expected_duration.mul_f32(2.0) {
+            if gap_duration > expected_duration * 2 {
                 self.gaps_detected += 1;
 
                 if self.device_kind.is_bluetooth() {
