@@ -40,6 +40,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          cache-on-failure: true
 
       - name: Cache FFmpeg sidecar
         uses: actions/cache@v4
@@ -61,4 +62,4 @@ jobs:
           Set-Content frontend/out/index.html "<!doctype html><title>ci</title>"
 
       - name: Run locked workspace tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked -- --test-threads=1 --nocapture
