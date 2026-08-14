@@ -1241,7 +1241,7 @@ mod tests {
     }
 
     /// Integration test that decodes a real audio file and runs VAD.
-    /// Run with: TEST_AUDIO_PATH=/path/to/audio.mp4 cargo test -- --ignored --nocapture
+    /// See docs/testing/BASELINE-WORKFLOW-TESTS.md for the checked-in fixture command.
     #[test]
     #[ignore]
     fn test_import_pipeline_decode_vad() {
@@ -1284,6 +1284,7 @@ mod tests {
 
             let total_segments = segments.len();
             println!("Found {} segments", total_segments);
+            assert!(!segments.is_empty(), "No speech detected");
 
             if !segments.is_empty() {
                 let durations: Vec<f64> = segments.iter()

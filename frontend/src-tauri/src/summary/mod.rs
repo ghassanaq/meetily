@@ -40,6 +40,9 @@ pub mod summary_engine;
 pub mod template_commands;
 pub mod templates;
 
+#[cfg(test)]
+mod workflow_tests;
+
 // Re-export Tauri commands (with their generated __cmd__ variants)
 pub use commands::{
     __cmd__api_cancel_summary, __cmd__api_detect_transcript_summary_language,
