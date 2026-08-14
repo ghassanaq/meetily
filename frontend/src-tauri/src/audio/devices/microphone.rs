@@ -3,14 +3,17 @@ use cpal::traits::{HostTrait, DeviceTrait};
 use log::{info, warn};
 
 use super::configuration::{AudioDevice, DeviceType};
+use crate::audio::host_thread::on_audio_host_thread;
 
 /// Get the default input (microphone) device for the system
 pub fn default_input_device() -> Result<AudioDevice> {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| anyhow!("No default input device found"))?;
-    Ok(AudioDevice::new(device.name()?, DeviceType::Input))
+    on_audio_host_thread(|| {
+        let host = cpal::default_host();
+        let device = host
+            .default_input_device()
+            .ok_or_else(|| anyhow!("No default input device found"))?;
+        Ok(AudioDevice::new(device.name()?, DeviceType::Input))
+    })
 }
 
 /// Find the built-in microphone device (wired, stable, consistent sample rate)
@@ -23,6 +26,10 @@ pub fn default_input_device() -> Result<AudioDevice> {
 ///
 /// Returns None if no built-in microphone found
 pub fn find_builtin_input_device() -> Result<Option<AudioDevice>> {
+    on_audio_host_thread(find_builtin_input_device_inner)
+}
+
+fn find_builtin_input_device_inner() -> Result<Option<AudioDevice>> {
     let host = cpal::default_host();
 
     // Built-in microphone name patterns (platform-specific)

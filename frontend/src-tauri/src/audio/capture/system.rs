@@ -4,6 +4,8 @@ use futures_util::{Stream, StreamExt};
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait};
 
+use crate::audio::host_thread::on_audio_host_thread;
+
 
 #[cfg(target_os = "macos")]
 use futures_channel::mpsc;
@@ -24,18 +26,20 @@ impl SystemAudioCapture {
     }
 
     pub fn list_system_devices() -> Result<Vec<String>> {
-        let host = cpal::default_host();
-        let devices = host.output_devices()
-            .map_err(|e| anyhow::anyhow!("Failed to enumerate output devices: {}", e))?;
+        on_audio_host_thread(|| {
+            let host = cpal::default_host();
+            let devices = host.output_devices()
+                .map_err(|e| anyhow::anyhow!("Failed to enumerate output devices: {}", e))?;
 
-        let mut device_names = Vec::new();
-        for device in devices {
-            if let Ok(name) = device.name() {
-                device_names.push(name);
+            let mut device_names = Vec::new();
+            for device in devices {
+                if let Ok(name) = device.name() {
+                    device_names.push(name);
+                }
             }
-        }
 
-        Ok(device_names)
+            Ok(device_names)
+        })
     }
 
     pub fn start_system_audio_capture(&self) -> Result<SystemAudioStream> {
@@ -104,11 +108,11 @@ impl SystemAudioCapture {
     }
 
     pub fn check_system_audio_permissions() -> bool {
-        // Check if we can enumerate audio devices
-        match cpal::default_host().output_devices() {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        // Check if we can enumerate audio devices.
+        // The iterator is deliberately left undrained - we only care whether it
+        // could be built - which is exactly the shape that used to orphan cpal's
+        // cached COM enumerator when this ran on a short-lived thread.
+        on_audio_host_thread(|| cpal::default_host().output_devices().is_ok())
     }
 }
 

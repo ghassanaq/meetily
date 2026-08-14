@@ -4,41 +4,44 @@ use log::error;
 
 use super::configuration::{AudioDevice, DeviceType};
 use super::platform;
+use crate::audio::host_thread::on_audio_host_thread;
 
 /// List all available audio devices on the system
 pub async fn list_audio_devices() -> Result<Vec<AudioDevice>> {
-    let host = cpal::default_host();
+    on_audio_host_thread(|| {
+        let host = cpal::default_host();
 
-    // Platform-specific device enumeration
-    let mut devices = {
-        #[cfg(target_os = "windows")]
-        {
-            platform::configure_windows_audio(&host)?
-        }
+        // Platform-specific device enumeration
+        let mut devices = {
+            #[cfg(target_os = "windows")]
+            {
+                platform::configure_windows_audio(&host)?
+            }
 
-        #[cfg(target_os = "linux")]
-        {
-            platform::configure_linux_audio(&host)?
-        }
+            #[cfg(target_os = "linux")]
+            {
+                platform::configure_linux_audio(&host)?
+            }
 
-        #[cfg(target_os = "macos")]
-        {
-            platform::configure_macos_audio(&host)?
-        }
-    };
+            #[cfg(target_os = "macos")]
+            {
+                platform::configure_macos_audio(&host)?
+            }
+        };
 
-    // Add any additional devices from the default host
-    if let Ok(other_devices) = host.devices() {
-        for device in other_devices {
-            if let Ok(name) = device.name() {
-                if !devices.iter().any(|d| d.name == name) {
-                    devices.push(AudioDevice::new(name, DeviceType::Output));
+        // Add any additional devices from the default host
+        if let Ok(other_devices) = host.devices() {
+            for device in other_devices {
+                if let Ok(name) = device.name() {
+                    if !devices.iter().any(|d| d.name == name) {
+                        devices.push(AudioDevice::new(name, DeviceType::Output));
+                    }
                 }
             }
         }
-    }
 
-    Ok(devices)
+        Ok(devices)
+    })
 }
 
 /// Trigger audio permission request on platforms that require it
@@ -46,19 +49,19 @@ pub async fn list_audio_devices() -> Result<Vec<AudioDevice>> {
 pub fn trigger_audio_permission() -> Result<bool> {
     use log::info;
 
-    let host = cpal::default_host();
-    let device = match host.default_input_device() {
-        Some(d) => d,
-        None => {
-            info!("[trigger_audio_permission] No default input device found - permission likely denied");
-            return Ok(false);
-        }
-    };
+    // Device lookup goes through the audio host thread; the stream itself is
+    // built here so the permission prompt keeps its current threading.
+    let lookup = on_audio_host_thread(|| {
+        let host = cpal::default_host();
+        let device = host.default_input_device()?;
+        let config = device.default_input_config().ok()?;
+        Some((device, config))
+    });
 
-    let config = match device.default_input_config() {
-        Ok(c) => c,
-        Err(e) => {
-            info!("[trigger_audio_permission] Failed to get input config: {} - permission likely denied", e);
+    let (device, config) = match lookup {
+        Some(pair) => pair,
+        None => {
+            info!("[trigger_audio_permission] No usable default input device found - permission likely denied");
             return Ok(false);
         }
     };

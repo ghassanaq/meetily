@@ -61,12 +61,11 @@ impl AudioLevelMonitor {
             streams.clear();
         }
 
-        let host = cpal::default_host();
         let level_data = Arc::new(Mutex::new(Vec::<AudioLevelData>::new()));
 
         // Create audio streams for each device
         for device_name in &device_names {
-            if let Ok(device) = self.find_device_by_name(&host, device_name) {
+            if let Ok(device) = Self::find_device_by_name(device_name) {
                 if let Ok(stream) = self.create_level_stream(&device, device_name, level_data.clone()).await {
                     let mut streams = self.streams.lock().await;
                     streams.push(stream);
@@ -137,30 +136,38 @@ impl AudioLevelMonitor {
     }
 
     /// Find a CPAL device by name
-    fn find_device_by_name(&self, host: &cpal::Host, device_name: &str) -> Result<cpal::Device> {
-        // Try input devices first
-        if let Ok(input_devices) = host.input_devices() {
-            for device in input_devices {
-                if let Ok(name) = device.name() {
-                    if name == device_name {
-                        return Ok(device);
+    ///
+    /// Enumeration runs on the audio host thread; see [`crate::audio::host_thread`].
+    fn find_device_by_name(device_name: &str) -> Result<cpal::Device> {
+        let wanted = device_name.to_string();
+
+        crate::audio::host_thread::on_audio_host_thread(move || {
+            let host = cpal::default_host();
+
+            // Try input devices first
+            if let Ok(input_devices) = host.input_devices() {
+                for device in input_devices {
+                    if let Ok(name) = device.name() {
+                        if name == wanted {
+                            return Ok(device);
+                        }
                     }
                 }
             }
-        }
 
-        // Try output devices
-        if let Ok(output_devices) = host.output_devices() {
-            for device in output_devices {
-                if let Ok(name) = device.name() {
-                    if name == device_name {
-                        return Ok(device);
+            // Try output devices
+            if let Ok(output_devices) = host.output_devices() {
+                for device in output_devices {
+                    if let Ok(name) = device.name() {
+                        if name == wanted {
+                            return Ok(device);
+                        }
                     }
                 }
             }
-        }
 
-        Err(anyhow::anyhow!("Device not found: {}", device_name))
+            Err(anyhow::anyhow!("Device not found: {}", wanted))
+        })
     }
 
     /// Create an audio stream for level monitoring
