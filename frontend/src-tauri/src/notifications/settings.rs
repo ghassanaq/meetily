@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use log::info as log_info;
 use std::path::PathBuf;
 use tauri::{AppHandle, Runtime};
-use dirs;
+use tauri::Manager;
+use crate::app_paths::{AppPaths, NOTIFICATIONS_STORE};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationSettings {
@@ -102,28 +103,14 @@ pub struct ConsentManager<R: Runtime> {
 
 impl<R: Runtime> ConsentManager<R> {
     pub fn new(app_handle: AppHandle<R>) -> Result<Self> {
-        let settings_path = Self::get_settings_path()?;
+        let settings_path = app_handle
+            .state::<AppPaths>()
+            .store_path(NOTIFICATIONS_STORE)?;
 
         Ok(Self {
             app_handle,
             settings_path,
         })
-    }
-
-    /// Get the path where notification settings are stored
-    fn get_settings_path() -> Result<PathBuf> {
-        let mut path = dirs::config_dir()
-            .ok_or_else(|| anyhow!("Could not find config directory"))?;
-
-        path.push("meetily");
-        path.push("notifications.json");
-
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        Ok(path)
     }
 
     /// Load notification settings from disk

@@ -302,7 +302,11 @@ impl SummaryService {
         template_id: String,
         summary_language: Option<String>,
     ) {
-        let app_data_dir = app.path().app_data_dir().ok();
+        let app_data_dir = Some(
+            app.state::<crate::app_paths::AppPaths>()
+                .root()
+                .to_path_buf(),
+        );
         Self::process_transcript_with_app_data_dir(
             app_data_dir,
             pool,

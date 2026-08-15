@@ -1,10 +1,11 @@
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 
 use anyhow::Result;
+use crate::app_paths::{AppPaths, RECORDING_PREFERENCES_STORE};
 #[cfg(target_os = "macos")]
 use log::error;
 
@@ -97,7 +98,8 @@ pub async fn load_recording_preferences<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<RecordingPreferences> {
     // Try to load from Tauri store
-    let store = match app.store("recording_preferences.json") {
+    let store_path = app.state::<AppPaths>().store_path(RECORDING_PREFERENCES_STORE)?;
+    let store = match app.store(store_path) {
         Ok(store) => store,
         Err(e) => {
             warn!("Failed to access store: {}, using defaults", e);
@@ -144,8 +146,9 @@ pub async fn save_recording_preferences<R: Runtime>(
           preferences.preferred_mic_device, preferences.preferred_system_device);
 
     // Get or create store
+    let store_path = app.state::<AppPaths>().store_path(RECORDING_PREFERENCES_STORE)?;
     let store = app
-        .store("recording_preferences.json")
+        .store(store_path)
         .map_err(|e| anyhow::anyhow!("Failed to access store: {}", e))?;
 
     // Serialize preferences to JSON value

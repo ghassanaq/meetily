@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
 import Analytics from '@/lib/analytics';
 import { toast } from 'sonner';
+import { loadAppStore } from '@/lib/app-store';
 
 export interface RecordingPreferences {
   save_folder: string;
@@ -57,8 +58,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   useEffect(() => {
     const loadNotificationPref = async () => {
       try {
-        const { Store } = await import('@tauri-apps/plugin-store');
-        const store = await Store.load('preferences.json');
+        const store = await loadAppStore('preferences.json');
         const show = await store.get<boolean>('show_recording_notification') ?? true;
         setShowRecordingNotification(show);
       } catch (error) {
@@ -107,8 +107,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   const handleNotificationToggle = async (enabled: boolean) => {
     try {
       setShowRecordingNotification(enabled);
-      const { Store } = await import('@tauri-apps/plugin-store');
-      const store = await Store.load('preferences.json');
+      const store = await loadAppStore('preferences.json');
       await store.set('show_recording_notification', enabled);
       await store.save();
       toast.success('Preference saved');

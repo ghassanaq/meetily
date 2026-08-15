@@ -1,7 +1,7 @@
 use log::{debug as log_debug, error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 
 use crate::{
@@ -14,6 +14,7 @@ use crate::{
     },
     state::AppState,
     summary::CustomOpenAIConfig,
+    app_paths::{AppPaths, API_STORE},
 };
 
 // Hardcoded server URL
@@ -206,7 +207,8 @@ pub struct Profile {
 // Helper function to get auth token from store (optional)
 #[allow(dead_code)]
 async fn get_auth_token<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
-    let store = match app.store("store.json") {
+    let store_path = app.state::<AppPaths>().store_path(API_STORE).ok()?;
+    let store = match app.store(store_path) {
         Ok(store) => store,
         Err(_) => return None,
     };
