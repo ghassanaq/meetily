@@ -16,6 +16,13 @@ The previous custom M0/M1 capture implementation is intentionally not migrated. 
 
 Extend Meetily with the following capabilities without removing its existing features.
 
+### Deployment assumption
+
+- This product is a single-user personal desktop assistant for the repository owner.
+- It is not currently a multi-user, enterprise-managed, or generally distributed service.
+- Prefer useful local workflows and recoverable backups over application-specific encryption infrastructure.
+- Revisit the threat model before distributing the application to other users or organizations.
+
 ### Expert profiles and playbooks
 
 - Add schema-validated, declarative Expert Profiles.
@@ -59,7 +66,8 @@ Extend Meetily with the following capabilities without removing its existing fea
 ### Privacy and security
 
 - Keep local processing as the default; cloud providers remain explicit opt-in integrations.
-- Encrypt transcripts, summaries, document passages, embeddings/indexes, profiles, and settings at rest.
+- Store meeting data in the user's local workspace and recommend operating-system disk encryption and reliable backups; application-level database/audio encryption is optional and is not a personal-release blocker.
+- Store provider API secrets through the operating-system credential facility when that hardening is implemented, and return masked metadata rather than full secrets over frontend IPC.
 - Keep meeting/document text out of ordinary logs.
 - Model output receives no filesystem, network, shell, or application tools.
 - Verify downloaded/imported model artifacts by exact manifest and cryptographic digest before activation.
