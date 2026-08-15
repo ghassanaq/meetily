@@ -226,6 +226,12 @@ export default function PageContent({
           onTemplateSelect={templates.handleTemplateSelection}
           isModelConfigLoading={false}
           onOpenModelSettings={handleRegisterModalOpen}
+          onProfileGenerated={result => {
+            meetingData.setAiSummary({
+              markdown: result.markdown,
+              profile_provenance: result.provenance,
+            } as any);
+          }}
         />
       </div>
     </motion.div>

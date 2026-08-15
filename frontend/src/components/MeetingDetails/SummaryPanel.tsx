@@ -6,6 +6,7 @@ import { BlockNoteSummaryView, BlockNoteSummaryViewRef } from '@/components/AISu
 import { EmptyStateSummary } from '@/components/EmptyStateSummary';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
+import type { ProfileSummaryGenerationResponse } from './ProfileSummarySelector';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
 import Analytics from '@/lib/analytics';
 import { useEffect, useRef, useState, RefObject } from 'react';
@@ -16,6 +17,7 @@ import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover
 import { LanguagePickerPopover } from '@/components/LanguagePickerPopover';
 import { useRecentLanguages } from '@/hooks/useRecentLanguages';
 import { labelForCode } from '@/lib/summary-languages';
+import { invoke } from '@tauri-apps/api/core';
 import {
   readMeetingSummaryLanguage,
   saveMeetingSummaryLanguage,
@@ -60,6 +62,7 @@ interface SummaryPanelProps {
   onTemplateSelect: (templateId: string, templateName: string) => void;
   isModelConfigLoading?: boolean;
   onOpenModelSettings?: (openFn: () => void) => void;
+  onProfileGenerated: (result: ProfileSummaryGenerationResponse) => void;
 }
 
 export function SummaryPanel({
@@ -95,11 +98,13 @@ export function SummaryPanel({
   selectedTemplate,
   onTemplateSelect,
   isModelConfigLoading = false,
-  onOpenModelSettings
+  onOpenModelSettings,
+  onProfileGenerated,
 }: SummaryPanelProps) {
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   const [summaryLangStorage, setSummaryLangStorage] = useState<SummaryLanguageStorage>('metadata');
   const [langPickerOpen, setLangPickerOpen] = useState(false);
+  const [profileLabel, setProfileLabel] = useState('Expert profile');
   const languageLoadVersionRef = useRef(0);
   const activeMeetingIdRef = useRef(meeting.id);
   const languageSaveVersionRef = useRef(0);
@@ -121,6 +126,36 @@ export function SummaryPanel({
   const autoSubtitle = isLocalFallbackLanguage
     ? 'Saved on this device for folderless meetings'
     : 'Uses dominant transcript language';
+  const transcriptText = transcripts.map(transcript => transcript.text).join('\n');
+  const profileProvenance = (aiSummary as any)?.profile_provenance as {
+    profile_id: string;
+    playbook_id: string;
+    capability_revision_hash: string;
+    model_binding_hash: string;
+  } | undefined;
+  const profileId = profileProvenance?.profile_id;
+
+  useEffect(() => {
+    if (!profileId) {
+      setProfileLabel('Expert profile');
+      return;
+    }
+    let cancelled = false;
+    invoke<Array<{ id: string; name: string }>>('profile_list')
+      .then(profiles => {
+        if (cancelled) return;
+        setProfileLabel(
+          profiles.find(profile => profile.id === profileId)?.name
+            ?? 'Deleted profile',
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setProfileLabel('Expert profile');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [profileId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -285,6 +320,10 @@ export function SummaryPanel({
                 isModelConfigLoading={isModelConfigLoading}
                 onOpenModelSettings={onOpenModelSettings}
                 languageSlot={languageSlot}
+                meetingId={meeting.id}
+                transcriptText={transcriptText}
+                summaryLanguage={summaryLang}
+                onProfileGenerated={onProfileGenerated}
               />
             </div>
 
@@ -303,6 +342,11 @@ export function SummaryPanel({
                 hasSummary={!!aiSummary}
               />
             </div>
+          </div>
+        )}
+        {profileProvenance && !isSummaryLoading && (
+          <div className="mx-auto mt-2 w-fit rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs text-blue-800" title={`Capability ${profileProvenance.capability_revision_hash} · Model binding ${profileProvenance.model_binding_hash}`}>
+            {profileLabel} · evaluated · playbook {profileProvenance.playbook_id.slice(0, 8)}
           </div>
         )}
       </div>
@@ -325,6 +369,10 @@ export function SummaryPanel({
               hasTranscripts={transcripts.length > 0}
               isModelConfigLoading={isModelConfigLoading}
               onOpenModelSettings={onOpenModelSettings}
+              meetingId={meeting.id}
+              transcriptText={transcriptText}
+              summaryLanguage={summaryLang}
+              onProfileGenerated={onProfileGenerated}
             />
           </div>
           {/* Loading spinner */}
@@ -355,6 +403,10 @@ export function SummaryPanel({
               isModelConfigLoading={isModelConfigLoading}
               onOpenModelSettings={onOpenModelSettings}
               languageSlot={transcripts.length > 0 ? languageSlot : undefined}
+              meetingId={meeting.id}
+              transcriptText={transcriptText}
+              summaryLanguage={summaryLang}
+              onProfileGenerated={onProfileGenerated}
             />
           </div>
           {/* Empty state message */}
