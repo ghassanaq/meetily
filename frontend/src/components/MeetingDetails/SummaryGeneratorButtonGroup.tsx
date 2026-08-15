@@ -23,6 +23,7 @@ import { toast } from 'sonner';
 import { useState, useEffect, useRef, ReactNode } from 'react';
 import { isOllamaNotInstalledError } from '@/lib/utils';
 import { BuiltInModelInfo } from '@/lib/builtin-ai';
+import { ProfileSummarySelector, ProfileSummaryGenerationResponse } from './ProfileSummarySelector';
 
 interface SummaryGeneratorButtonGroupProps {
   languageSlot?: ReactNode;
@@ -40,6 +41,10 @@ interface SummaryGeneratorButtonGroupProps {
   hasSummary?: boolean;
   isModelConfigLoading?: boolean;
   onOpenModelSettings?: (openFn: () => void) => void;
+  meetingId: string;
+  transcriptText: string;
+  summaryLanguage: string | null;
+  onProfileGenerated: (result: ProfileSummaryGenerationResponse) => void;
 }
 
 export function SummaryGeneratorButtonGroup({
@@ -57,6 +62,10 @@ export function SummaryGeneratorButtonGroup({
   hasSummary = false,
   isModelConfigLoading = false,
   onOpenModelSettings,
+  meetingId,
+  transcriptText,
+  summaryLanguage,
+  onProfileGenerated,
   languageSlot
 }: SummaryGeneratorButtonGroupProps) {
   const [isCheckingModels, setIsCheckingModels] = useState(false);
@@ -292,6 +301,15 @@ export function SummaryGeneratorButtonGroup({
       )}
 
       {languageSlot}
+
+      <ProfileSummarySelector
+        meetingId={meetingId}
+        transcriptText={transcriptText}
+        additionalUserContext={customPrompt}
+        summaryLanguage={summaryLanguage}
+        disabled={isGenerating || isCheckingModels || isModelConfigLoading}
+        onGenerated={onProfileGenerated}
+      />
 
       {/* Settings button */}
       <Dialog open={settingsDialogOpen} onOpenChange={setSettingsDialogOpen}>
