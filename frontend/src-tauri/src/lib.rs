@@ -36,6 +36,7 @@ pub(crate) use perf_trace;
 
 // Declare audio module
 pub mod analytics;
+pub mod app_paths;
 pub mod api;
 pub mod audio;
 pub mod config;
@@ -50,6 +51,7 @@ pub mod groq;
 pub mod openrouter;
 pub mod parakeet_engine;
 pub mod state;
+pub mod storage_migration;
 pub mod summary;
 pub mod tray;
 pub mod utils;
@@ -416,6 +418,16 @@ pub fn run() {
         .manage(audio::init_system_audio_state())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
+            let app_paths = app_paths::AppPaths::resolve(_app.handle())?;
+            let migration_report = tauri::async_runtime::block_on(
+                storage_migration::migrate_legacy_storage(&app_paths),
+            )?;
+            log::info!("Stable application data root: {}", app_paths.root().display());
+            if migration_report != storage_migration::MigrationReport::default() {
+                log::info!("Legacy storage migration result: {:?}", migration_report);
+            }
+            _app.manage(app_paths);
+
             log::info!("Application setup complete");
 
             // Initialize system tray
@@ -727,6 +739,7 @@ pub fn run() {
             // Database and Models path commands
             database::commands::get_database_directory,
             database::commands::open_database_folder,
+            app_paths::get_app_store_path,
             whisper_engine::commands::open_models_folder,
             // Onboarding commands
             onboarding::get_onboarding_status,

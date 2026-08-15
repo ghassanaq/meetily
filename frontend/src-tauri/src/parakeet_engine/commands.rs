@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::Arc;
 use tauri::{command, Emitter, AppHandle, Manager, Runtime};
+use crate::app_paths::AppPaths;
 
 // Global parakeet engine
 pub static PARAKEET_ENGINE: Mutex<Option<Arc<ParakeetEngine>>> = Mutex::new(None);
@@ -10,13 +11,10 @@ pub static PARAKEET_ENGINE: Mutex<Option<Arc<ParakeetEngine>>> = Mutex::new(None
 // Global models directory path (set during app initialization)
 static MODELS_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Initialize the models directory path using app_data_dir
+/// Initialize the models directory path using the stable application data root.
 /// This should be called during app setup before parakeet_init
 pub fn set_models_directory<R: Runtime>(app: &AppHandle<R>) {
-    let app_data_dir = app.path().app_data_dir()
-        .expect("Failed to get app data dir");
-
-    let models_dir = app_data_dir.join("models");
+    let models_dir = app.state::<AppPaths>().models_dir().to_path_buf();
 
     // Create directory if it doesn't exist
     if !models_dir.exists() {
