@@ -42,6 +42,7 @@ pub mod audio;
 pub mod config;
 pub mod console_utils;
 pub mod database;
+pub mod expert_profiles;
 pub mod notifications;
 pub mod ollama;
 pub mod onboarding;
@@ -677,6 +678,25 @@ pub fn run() {
             summary::commands::api_save_meeting_detected_summary_language,
             summary::commands::api_detect_transcript_summary_language,
             summary::commands::api_cancel_summary,
+            // Declarative Expert Profiles and embedded Meeting Playbooks
+            expert_profiles::commands::profile_create,
+            expert_profiles::commands::profile_create_version,
+            expert_profiles::commands::profile_store_eval_plan,
+            expert_profiles::commands::profile_list,
+            expert_profiles::commands::profile_list_versions,
+            expert_profiles::commands::profile_list_eval_plans,
+            expert_profiles::commands::profile_get,
+            expert_profiles::commands::profile_get_eval_plan,
+            expert_profiles::commands::profile_get_activation,
+            expert_profiles::commands::profile_export,
+            expert_profiles::commands::profile_import,
+            expert_profiles::commands::profile_run_evals,
+            expert_profiles::commands::profile_adjudicate_eval,
+            expert_profiles::commands::profile_activate,
+            expert_profiles::commands::profile_retire,
+            expert_profiles::commands::profile_restore,
+            expert_profiles::commands::profile_delete,
+            expert_profiles::commands::summary_generate_with_profile,
             // Template commands
             summary::template_commands::api_list_templates,
             summary::template_commands::api_get_template_details,
