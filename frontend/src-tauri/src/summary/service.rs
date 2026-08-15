@@ -12,7 +12,7 @@ use crate::ollama::metadata::ModelMetadataCache;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
@@ -292,7 +292,34 @@ impl SummaryService {
     /// * `custom_prompt` - Optional user-provided context
     /// * `template_id` - Template identifier (e.g., "daily_standup", "standard_meeting")
     pub async fn process_transcript_background<R: tauri::Runtime>(
-        _app: AppHandle<R>,
+        app: AppHandle<R>,
+        pool: SqlitePool,
+        meeting_id: String,
+        text: String,
+        model_provider: String,
+        model_name: String,
+        custom_prompt: String,
+        template_id: String,
+        summary_language: Option<String>,
+    ) {
+        let app_data_dir = app.path().app_data_dir().ok();
+        Self::process_transcript_with_app_data_dir(
+            app_data_dir,
+            pool,
+            meeting_id,
+            text,
+            model_provider,
+            model_name,
+            custom_prompt,
+            template_id,
+            summary_language,
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn process_transcript_with_app_data_dir(
+        app_data_dir: Option<PathBuf>,
         pool: SqlitePool,
         meeting_id: String,
         text: String,
@@ -435,9 +462,6 @@ impl SummaryService {
             // Cloud providers (OpenAI, Claude, Groq, CustomOpenAI) handle large contexts automatically
             100000  // Effectively unlimited for single-pass processing
         };
-
-        // Get app data directory for BuiltInAI provider
-        let app_data_dir = _app.path().app_data_dir().ok();
 
         if let Some(code) = &summary_language {
             info!("📝 Summary language preference: {}", code);
