@@ -35,7 +35,7 @@ Phase 1 does **not** implement automatic triggers, independent/reusable playbook
 7. Switching profile, playbook, renderer, or model never relabels existing output.
 8. Cloud providers remain explicit opt-in integrations. Evaluation never sends meeting content to a cloud provider without the same provider consent required for production generation.
 9. Imported bundles are untrusted data, are fully validated before persistence, and never activate automatically.
-10. The phase-1 plaintext-at-rest deviation is a release blocker; see section 9.
+10. Personal-use builds follow the local storage and operating-system security posture in section 9; application-level encryption is not an activation or release prerequisite.
 
 ---
 
@@ -265,7 +265,7 @@ An evaluation plan's hashed content contains no profile ID or candidate version 
 }
 ```
 
-Every profile must have a non-empty user plan, and every embedded playbook must be referenced by at least one case. The plan is associated with a profile outside its hashed content, while cases reference stable embedded playbook UUIDs so candidate and baseline versions exercise the same logical playbook. Phase 1 fixtures are synthetic. Attaching real meeting transcripts to eval plans is blocked from release until the database-wide encryption design covers them.
+Every profile must have a non-empty user plan, and every embedded playbook must be referenced by at least one case. The plan is associated with a profile outside its hashed content, while cases reference stable embedded playbook UUIDs so candidate and baseline versions exercise the same logical playbook. Phase 1 fixtures are synthetic. A user may explicitly select a local real meeting for a private eval run, but real meeting content is never bundled, exported by default, or sent to a cloud judge without the same provider consent required for production.
 
 ### 5.2 Application-owned safety gate
 
@@ -514,19 +514,20 @@ Limits are checked before allocation-heavy canonicalization or persistence and r
 
 ---
 
-## 9. Database-wide encryption release blocker
+## 9. Personal-use storage posture
 
-The current Meetily database stores transcripts and summaries without the database-wide encryption required by [PRODUCT-HANDOFF.md](PRODUCT-HANDOFF.md). Encrypting only profile rows would create an incoherent partial solution while leaving more sensitive meeting content plaintext.
+This application is currently built for one person on their own desktop. Profile, transcript, summary, and evaluation data may use the existing local SQLite and workspace storage baseline. Application-specific database or audio encryption is optional and does not block profile activation, merging, or a personal build.
 
-Phase-1 profile work may be implemented and merged using the existing storage baseline only if the deviation is explicit. A build containing user profiles is **not release-ready** until a separate database-wide design covers, at minimum:
+The practical privacy baseline is:
 
-- transcripts, summaries, profile/eval payloads, document passages, embeddings/indexes, and settings;
-- key creation, storage, rotation, loss, and recovery;
-- migration of the existing WAL-mode database and the legacy `VACUUM INTO` migration path;
-- backup/restore and corruption recovery;
-- platform behavior and test coverage.
+- local processing by default and explicit consent for cloud providers;
+- operating-system account protection and disk encryption where available;
+- user-controlled recordings and backups;
+- no meeting text in ordinary logs;
+- inert model output with no tools or executable capability; and
+- operating-system credential storage plus masked frontend reads for provider secrets when secret hardening is implemented.
 
-SQLCipher versus application-level envelope encryption is intentionally not decided in this profile contract.
+Before wider distribution, revisit encryption, recovery, backup, exports, audio files, metadata, and platform-specific key custody as one threat-model decision rather than encrypting only profile rows.
 
 ---
 
@@ -572,9 +573,9 @@ Embedding a candidate version hash changes the plan hash for every candidate and
 
 Overwriting drafts contradicts immutable versioning and weakens provenance. Every save creates a new immutable version.
 
-### 11.4 Rejected: profile-only encryption
+### 11.4 Rejected: profile-only encryption requirement
 
-Profiles are not the most sensitive database content. Encryption must cover the database-wide data classes named by the product handoff and is tracked as a release blocker rather than hidden inside this feature.
+Profiles are not the most sensitive local content, so this feature does not invent a profile-specific encryption layer. Personal builds follow section 9. Any future application-level encryption decision must cover the complete storage threat model rather than only profile rows.
 
 ### 11.5 Rejected: independently versioned playbooks in phase 1
 

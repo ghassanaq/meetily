@@ -1,6 +1,6 @@
 -- Declarative Expert Profiles and embedded Meeting Playbooks.
--- Payload columns use the existing plaintext database baseline. Database-wide
--- encryption remains a release blocker documented in EXPERT_PROFILES_DESIGN.md.
+-- Payload columns use the personal local-storage baseline documented in
+-- EXPERT_PROFILES_DESIGN.md.
 
 CREATE TABLE IF NOT EXISTS expert_profiles (
     id TEXT PRIMARY KEY,

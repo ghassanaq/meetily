@@ -566,15 +566,13 @@ triggers reject in-place mutation of transcript-version content.
 - old and new resolved span hashes where available; and
 - creation timestamp with an idempotency uniqueness constraint.
 
-All content remains local. The existing documented plaintext-storage deviation
-also applies to snapshots, transcript versions, and derived intelligence. A
-profile-enabled/evidence-enabled release remains blocked on the database-wide
-encryption decision; profile-only or citation-only encryption is insufficient.
-Citation snapshots contain verbatim meeting speech and are among the most
-sensitive rows in the schema. Every additional plaintext version and snapshot
-increases the eventual encryption migration surface, so database-wide encryption
-should be scheduled before further evidence-bearing storage layers accumulate,
-not treated as indefinite release cleanup.
+All content remains local under the personal-use storage posture in
+`PRODUCT-HANDOFF.md`. Application-level encryption is optional and does not block
+implementation or a personal build. Citation snapshots contain verbatim meeting
+speech and should be treated as sensitive local data: keep them out of logs,
+exports unless explicitly selected, and provider requests unless explicitly
+consented. Operating-system disk encryption and reliable backups are the
+recommended at-rest controls for the current single-user deployment.
 
 ## 11. Existing-data enrollment
 
@@ -752,4 +750,4 @@ This contract does not add:
 - remote synchronization;
 - filesystem retention enforcement;
 - an updater or release mechanism; or
-- a substitute for database-wide encryption.
+- application-specific database or audio encryption.
