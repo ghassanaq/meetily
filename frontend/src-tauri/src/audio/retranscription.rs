@@ -5,6 +5,11 @@ use crate::audio::vad::get_speech_chunks_with_progress;
 use super::common::{create_transcript_segments, split_segment_at_silence, write_transcripts_json};
 use super::constants::AUDIO_EXTENSIONS;
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
+use crate::evidence::{
+    enroll_recording_file, seconds_to_millis, LegacyTranscriptProjection,
+    ProvenanceRepository, RecordingArtifactKind, TranscriptVersionContent,
+    TranscriptVersionSegment, TRANSCRIPT_VERSION_SCHEMA,
+};
 use crate::parakeet_engine::ParakeetEngine;
 use crate::state::AppState;
 use crate::whisper_engine::WhisperEngine;
@@ -15,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+use uuid::Uuid;
 
 /// Global flag to track if retranscription is in progress
 static RETRANSCRIPTION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -309,6 +315,21 @@ async fn run_retranscription<R: Runtime>(
     } else {
         None
     };
+    let evidence_model = if let Some(engine) = &parakeet_engine {
+        engine
+            .get_current_model()
+            .await
+            .or_else(|| model.clone())
+            .unwrap_or_else(|| DEFAULT_PARAKEET_MODEL.to_string())
+    } else if let Some(engine) = &whisper_engine {
+        engine
+            .get_current_model()
+            .await
+            .or_else(|| model.clone())
+            .unwrap_or_else(|| DEFAULT_WHISPER_MODEL.to_string())
+    } else {
+        return Err(anyhow!("Transcription engine was not initialized"));
+    };
 
     // Split very long segments at silence boundaries for better transcription quality.
     // Hard cuts at arbitrary sample positions lose words at boundaries. Instead, scan
@@ -388,9 +409,8 @@ async fn run_retranscription<R: Runtime>(
         let trimmed = text.trim();
         if !trimmed.is_empty() {
             debug!(
-                "Segment {}/{}: {:.1}s, conf={:.2}, text='{}'",
-                i + 1, processable_count, segment_duration_sec, conf,
-                if trimmed.len() > 80 { let mut end = 80; while !trimmed.is_char_boundary(end) { end -= 1; } &trimmed[..end] } else { trimmed }
+                "Segment {}/{}: {:.1}s, conf={:.2}, text_chars={}",
+                i + 1, processable_count, segment_duration_sec, conf, trimmed.chars().count()
             );
             all_transcripts.push((text, segment.start_timestamp_ms, segment.end_timestamp_ms));
             total_confidence += conf;
@@ -426,43 +446,79 @@ async fn run_retranscription<R: Runtime>(
         .try_state::<AppState>()
         .ok_or_else(|| anyhow!("App state not available"))?;
 
-    // Wrap delete+insert+update in a transaction to prevent data loss
     let pool = app_state.db_manager.pool();
-    let mut conn = pool.acquire().await.map_err(|e| anyhow!("DB error: {}", e))?;
-    let mut tx = sqlx::Connection::begin(&mut *conn)
-        .await
-        .map_err(|e| anyhow!("Failed to start transaction: {}", e))?;
-
-    sqlx::query("DELETE FROM transcripts WHERE meeting_id = ?")
-        .bind(&meeting_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| anyhow!("Failed to delete existing transcripts: {}", e))?;
-
-    for segment in &segments {
-        sqlx::query(
-            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration)
-             VALUES (?, ?, ?, ?, ?, ?, ?)"
-        )
-        .bind(&segment.id)
-        .bind(&meeting_id)
-        .bind(&segment.text)
-        .bind(&segment.timestamp)
-        .bind(segment.audio_start_time)
-        .bind(segment.audio_end_time)
-        .bind(segment.duration)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| anyhow!("Failed to insert transcript: {}", e))?;
-    }
-
-    tx.commit().await
-        .map_err(|e| anyhow!("Failed to commit transaction: {}", e))?;
+    emit_progress(
+        &app,
+        &meeting_id,
+        "saving",
+        82,
+        "Indexing recording evidence...",
+    );
+    let duration_ms = seconds_to_millis(duration_seconds)?;
+    let enrolled = enroll_recording_file(
+        pool,
+        &meeting_id,
+        RecordingArtifactKind::Captured,
+        &audio_path,
+        duration_ms,
+    )
+    .await?;
+    let recording_artifact_id = Uuid::parse_str(&enrolled.artifact.id)
+        .map_err(|error| anyhow!("Invalid recording artifact id: {error}"))?;
+    let evidence_segments = segments
+        .iter()
+        .map(|segment| {
+            let start_ms = seconds_to_millis(segment.audio_start_time.unwrap_or_default())?;
+            let end_ms = seconds_to_millis(segment.audio_end_time.unwrap_or_default())?;
+            Ok(TranscriptVersionSegment {
+                segment_id: Uuid::new_v4(),
+                start_ms,
+                end_ms,
+                text: segment.text.clone(),
+                speaker: None,
+                source: Some("retranscription".to_string()),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let transcript_version = TranscriptVersionContent {
+        schema_version: TRANSCRIPT_VERSION_SCHEMA,
+        recording_artifact_id,
+        recording_version_hash: enrolled.version.version_hash,
+        language: language.clone(),
+        engine: if use_parakeet {
+            "parakeet".to_string()
+        } else {
+            "whisper".to_string()
+        },
+        model: evidence_model,
+        configuration_hash: None,
+        segments: evidence_segments,
+    };
+    let legacy_projection = segments
+        .iter()
+        .map(|segment| LegacyTranscriptProjection {
+            id: segment.id.clone(),
+            text: segment.text.clone(),
+            timestamp: segment.timestamp.clone(),
+            audio_start_time: segment.audio_start_time,
+            audio_end_time: segment.audio_end_time,
+            duration: segment.duration,
+        })
+        .collect::<Vec<_>>();
+    let evidence_outcome = ProvenanceRepository::install_retranscription_and_invalidate(
+        pool,
+        Uuid::new_v4(),
+        &transcript_version,
+        &meeting_id,
+        &legacy_projection,
+    )
+    .await?;
 
     info!(
-        "Updated {} transcripts for meeting {} in transaction",
+        "Updated {} transcripts for meeting {} in transaction; {} evidence artifacts invalidated",
         segments.len(),
-        meeting_id
+        meeting_id,
+        evidence_outcome.invalidations_created
     );
 
     // Write updated transcripts.json and metadata.json to the meeting folder

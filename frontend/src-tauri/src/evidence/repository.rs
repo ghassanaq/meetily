@@ -1,6 +1,6 @@
 use chrono::Utc;
 use serde::Serialize;
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -82,7 +82,7 @@ pub struct StoredTranscriptVersion {
 }
 
 #[derive(Debug, FromRow)]
-struct TranscriptVersionRow {
+pub(crate) struct TranscriptVersionRow {
     id: String,
     recording_artifact_id: String,
     recording_version_hash: String,
@@ -261,11 +261,26 @@ impl EvidenceRepository {
         transcript_version_id: Uuid,
         content: &TranscriptVersionContent,
     ) -> Result<StoredTranscriptVersion, EvidenceRepositoryError> {
+        let mut transaction = pool.begin().await?;
+        let stored = Self::install_transcript_version_in_transaction(
+            &mut transaction,
+            transcript_version_id,
+            content,
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(stored)
+    }
+
+    pub(crate) async fn install_transcript_version_in_transaction(
+        transaction: &mut Transaction<'_, Sqlite>,
+        transcript_version_id: Uuid,
+        content: &TranscriptVersionContent,
+    ) -> Result<StoredTranscriptVersion, EvidenceRepositoryError> {
         content.validate()?;
         let version_hash = hash_transcript_version(content)?;
         let payload = canonical_transcript_payload(content)?;
         let artifact_id = content.recording_artifact_id.to_string();
-        let mut transaction = pool.begin().await?;
 
         let recording_duration: Option<i64> = sqlx::query_scalar(
             r#"
@@ -276,10 +291,9 @@ impl EvidenceRepository {
         )
         .bind(&artifact_id)
         .bind(&content.recording_version_hash)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(&mut **transaction)
         .await?;
         let Some(recording_duration) = recording_duration else {
-            transaction.rollback().await?;
             return Err(EvidenceRepositoryError::RecordingVersionNotFound {
                 artifact_id: content.recording_artifact_id,
                 version_hash: content.recording_version_hash.clone(),
@@ -294,22 +308,20 @@ impl EvidenceRepository {
             .enumerate()
             .find(|(_, segment)| segment.end_ms > allowed_end)
         {
-            transaction.rollback().await?;
             return Err(EvidenceRepositoryError::SegmentBeyondRecording { index });
         }
 
         if let Some(existing) =
-            Self::find_transcript_row_by_hash(&mut transaction, &artifact_id, &version_hash).await?
+            Self::find_transcript_row_by_hash(transaction, &artifact_id, &version_hash).await?
         {
             let stored = Self::verify_transcript_row(existing)?.0;
             Self::set_transcript_head(
-                &mut transaction,
+                transaction,
                 &artifact_id,
                 &stored.id,
                 &Utc::now().to_rfc3339(),
             )
             .await?;
-            transaction.commit().await?;
             return Ok(stored);
         }
 
@@ -335,7 +347,7 @@ impl EvidenceRepository {
         .bind(&content.configuration_hash)
         .bind(payload)
         .bind(&now)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
 
         for (ordinal, segment) in content.segments.iter().enumerate() {
@@ -355,13 +367,11 @@ impl EvidenceRepository {
             .bind(&segment.text)
             .bind(&segment.speaker)
             .bind(&segment.source)
-            .execute(&mut *transaction)
+            .execute(&mut **transaction)
             .await?;
         }
 
-        Self::set_transcript_head(&mut transaction, &artifact_id, &transcript_version_id, &now)
-            .await?;
-        transaction.commit().await?;
+        Self::set_transcript_head(transaction, &artifact_id, &transcript_version_id, &now).await?;
 
         Ok(StoredTranscriptVersion {
             id: transcript_version_id,
@@ -484,7 +494,7 @@ impl EvidenceRepository {
         .await?)
     }
 
-    async fn find_transcript_row_by_hash(
+    pub(crate) async fn find_transcript_row_by_hash(
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         artifact_id: &str,
         version_hash: &str,
@@ -528,7 +538,7 @@ impl EvidenceRepository {
         Ok(())
     }
 
-    fn verify_transcript_row(
+    pub(crate) fn verify_transcript_row(
         row: TranscriptVersionRow,
     ) -> Result<(StoredTranscriptVersion, TranscriptVersionContent), EvidenceRepositoryError> {
         let content: TranscriptVersionContent = serde_json::from_slice(&row.content_payload)
