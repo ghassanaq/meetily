@@ -24,6 +24,7 @@ import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcess
 import { ImportAudioDialog, ImportDropOverlay } from '@/components/ImportAudio'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
+import { usePathname } from 'next/navigation'
 
 
 const sourceSans3 = Source_Sans_3({
@@ -62,7 +63,7 @@ function ConditionalImportDialog({
 
 // export { metadata } from './metadata'
 
-export default function RootLayout({
+function MainApplication({
   children,
 }: {
   children: React.ReactNode
@@ -230,8 +231,6 @@ export default function RootLayout({
   }
 
   return (
-    <html lang="en">
-      <body className={`${sourceSans3.variable} font-sans antialiased`}>
         <AnalyticsProvider>
           <RecordingStateProvider>
             <TranscriptProvider>
@@ -272,7 +271,21 @@ export default function RootLayout({
             </TranscriptProvider>
           </RecordingStateProvider>
         </AnalyticsProvider>
+  )
+}
 
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  const pathname = usePathname()
+  const isLiveAssist = pathname === '/live-assist'
+
+  return (
+    <html lang="en">
+      <body className={`${sourceSans3.variable} font-sans antialiased`}>
+        {isLiveAssist ? children : <MainApplication>{children}</MainApplication>}
         <Toaster position="bottom-center" richColors closeButton />
       </body>
     </html>
