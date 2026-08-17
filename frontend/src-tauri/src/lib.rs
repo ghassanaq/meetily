@@ -397,6 +397,25 @@ pub fn run() {
 
     let mut builder = tauri::Builder::default();
 
+    // This must be the first plugin so a second launch exits before it can
+    // register shortcuts, create windows, or initialize application state.
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            log_info!(
+                "Second app instance requested with args: {:?}, cwd: {:?}",
+                args,
+                cwd
+            );
+
+            if args.iter().any(|arg| arg == "--live-assist") {
+                live_assist::enter_overlay_mode(app);
+            } else {
+                tray::focus_main_window(app);
+            }
+        }));
+    }
+
     {
         use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
 
@@ -426,23 +445,6 @@ pub fn run() {
                 })
                 .build(),
         );
-    }
-
-    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-            log_info!(
-                "Second app instance requested with args: {:?}, cwd: {:?}",
-                args,
-                cwd
-            );
-
-            if args.iter().any(|arg| arg == "--live-assist") {
-                live_assist::enter_overlay_mode(app);
-            } else {
-                tray::focus_main_window(app);
-            }
-        }));
     }
 
     builder
