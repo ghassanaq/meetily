@@ -4,7 +4,8 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-pub const DEFAULT_ENDPOINT: &str = "https://api.openai.com/v1/chat/completions";
+pub const DEFAULT_ENDPOINT: &str = "https://api.deepseek.com/chat/completions";
+pub const DEFAULT_MODEL: &str = "deepseek-v4-pro";
 
 #[derive(Debug, Clone)]
 pub struct AssistProviderConfig {
@@ -18,7 +19,7 @@ impl AssistProviderConfig {
         let api_key = std::env::var("MEETING_ASSISTANT_LIVE_API_KEY")
             .map_err(|_| anyhow!("MEETING_ASSISTANT_LIVE_API_KEY is not configured"))?;
         let model = std::env::var("MEETING_ASSISTANT_LIVE_MODEL")
-            .unwrap_or_else(|_| "gpt-5.6-luna".to_string());
+            .unwrap_or_else(|_| DEFAULT_MODEL.to_string());
         let endpoint = std::env::var("MEETING_ASSISTANT_LIVE_ENDPOINT")
             .unwrap_or_else(|_| DEFAULT_ENDPOINT.to_string());
         let parsed = url::Url::parse(&endpoint).context("invalid Live Assist endpoint")?;
@@ -68,6 +69,9 @@ pub async fn stream_chat(
     } else {
         body["temperature"] = json!(0.2);
         body["max_tokens"] = json!(max_tokens);
+        if is_deepseek_endpoint(&config.endpoint) {
+            body["thinking"] = json!({ "type": "disabled" });
+        }
     }
     let response = client
         .post(&config.endpoint)
@@ -182,6 +186,16 @@ fn is_openai_endpoint(endpoint: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn is_deepseek_endpoint(endpoint: &str) -> bool {
+    url::Url::parse(endpoint)
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.eq_ignore_ascii_case("api.deepseek.com"))
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,9 +219,21 @@ mod tests {
 
     #[test]
     fn openai_endpoint_uses_current_completion_limit_shape() {
-        assert!(is_openai_endpoint(DEFAULT_ENDPOINT));
+        assert!(is_openai_endpoint(
+            "https://api.openai.com/v1/chat/completions"
+        ));
+        assert!(!is_openai_endpoint(DEFAULT_ENDPOINT));
         assert!(!is_openai_endpoint(
             "http://localhost:11434/v1/chat/completions"
+        ));
+    }
+
+    #[test]
+    fn deepseek_defaults_use_v4_pro_and_non_thinking_chat_completions() {
+        assert_eq!(DEFAULT_MODEL, "deepseek-v4-pro");
+        assert!(is_deepseek_endpoint(DEFAULT_ENDPOINT));
+        assert!(!is_deepseek_endpoint(
+            "https://api.openai.com/v1/chat/completions"
         ));
     }
 }

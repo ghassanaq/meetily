@@ -35,8 +35,8 @@ Required variable:
 
 Optional variables:
 
-- `MEETING_ASSISTANT_LIVE_MODEL` — defaults to `gpt-5.6-luna`, OpenAI's current cost-sensitive, high-volume model. The experiment uses streaming Chat Completions and no tools.
-- `MEETING_ASSISTANT_LIVE_ENDPOINT` — defaults to the OpenAI-compatible chat-completions endpoint at `https://api.openai.com/v1/chat/completions`.
+- `MEETING_ASSISTANT_LIVE_MODEL` — defaults to `deepseek-v4-pro`. The experiment uses streaming Chat Completions in non-thinking mode and no tools.
+- `MEETING_ASSISTANT_LIVE_ENDPOINT` — defaults to DeepSeek's OpenAI-compatible endpoint at `https://api.deepseek.com/chat/completions`.
 
 Configure these in the Windows user environment or keep the key in the ignored root `.env`, build a release binary once, and then double-click `scripts/start-live-assist.cmd` before a meeting. The launcher checks configuration and the release binary without printing the secret.
 
