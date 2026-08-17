@@ -323,7 +323,7 @@ export default function LiveAssistPage() {
               {current.error && <p className="rounded-lg bg-red-400/10 p-3 text-sm text-red-200">{current.error}</p>}
               {current.answer && (
                 <>
-                  <h1 className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">Say this</h1>
+                  <h1 className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">Your response</h1>
                   <p className="max-w-3xl text-lg font-semibold leading-7 text-white">{current.answer}</p>
                   <button
                     type="button"

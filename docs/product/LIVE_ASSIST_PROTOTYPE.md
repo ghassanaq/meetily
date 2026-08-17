@@ -11,7 +11,7 @@ It does not replace or modify Meetily's existing recording, transcription, works
 - The dedicated Assist stream retains the latest 60 seconds of system audio in RAM.
 - Holding **Ctrl+Alt+Space** starts a new question capture. Four seconds before the press are included. Releasing closes the clip and starts local transcription.
 - Holding **Ctrl+Alt+Shift+Space** captures a follow-up. Its parent is the exchange displayed when capture starts; later navigation cannot retarget it.
-- The overlay streams a two-or-three-sentence **Say this** suggestion. Longer detail is a separate, on-demand provider request.
+- The overlay streams a two-or-three-sentence first-person response written as the user's own ready-to-speak words. It contains no coaching labels or instructions. Longer detail is a separate, on-demand provider request.
 - Previous and next navigation allow an interruption to be handled and the earlier answer to be revisited.
 - A new capture interrupts an unfinished provider stream. Generation IDs prevent late chunks from replacing the current result.
 
