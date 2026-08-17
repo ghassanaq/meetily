@@ -53,6 +53,7 @@ pub mod groq;
 pub mod live_assist;
 pub mod openrouter;
 pub mod parakeet_engine;
+pub mod professional_identity;
 pub mod state;
 pub mod storage_migration;
 pub mod summary;
@@ -744,6 +745,15 @@ pub fn run() {
             expert_profiles::commands::profile_restore,
             expert_profiles::commands::profile_delete,
             expert_profiles::commands::summary_generate_with_profile,
+            // Versioned professional identity data (CV, TORs, projects, and sources)
+            professional_identity::commands::identity_create,
+            professional_identity::commands::identity_create_version,
+            professional_identity::commands::identity_list,
+            professional_identity::commands::identity_list_versions,
+            professional_identity::commands::identity_get,
+            professional_identity::commands::identity_retire,
+            professional_identity::commands::identity_restore,
+            professional_identity::commands::identity_delete,
             // Disposable Live Assist prototype
             live_assist::assist_arm,
             live_assist::assist_disarm,
@@ -754,6 +764,9 @@ pub fn run() {
             live_assist::assist_set_profile,
             live_assist::assist_clear_profile,
             live_assist::assist_list_profiles,
+            live_assist::assist_set_identity,
+            live_assist::assist_clear_identity,
+            live_assist::assist_list_identities,
             live_assist::assist_start_capture,
             live_assist::assist_toggle_capture,
             live_assist::assist_stop_capture,

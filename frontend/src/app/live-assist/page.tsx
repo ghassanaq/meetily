@@ -38,11 +38,19 @@ type AssistExchange = {
   status: ExchangeStatus
   question: string
   answer: string
+  answerWordCount: number | null
+  answerFormatWarnings: string[]
   detail: string
   detailStatus: ExchangeStatus | null
   detailTruncated: boolean
   detailError: string | null
   error: string | null
+  profileId: string | null
+  profileVersionHash: string | null
+  playbookId: string | null
+  identityId: string | null
+  identityVersionHash: string | null
+  groundingSources: GroundingSource[]
   buildRevision: string
   createdAt: string
   timings: {
@@ -70,6 +78,8 @@ type AssistSnapshot = {
   selectedProfileId: string | null
   selectedProfileVersionHash: string | null
   selectedPlaybookId: string | null
+  selectedIdentityId: string | null
+  selectedIdentityVersionHash: string | null
   currentExchangeId: string | null
   capturing: boolean
   contextGeneration: number
@@ -86,6 +96,20 @@ type ProfileChoice = {
   playbooks: Array<{ id: string; name: string }>
 }
 
+type IdentityChoice = {
+  identityId: string
+  identityVersionHash: string
+  identityName: string
+  roleTitle: string
+}
+
+type GroundingSource = {
+  recordId: string
+  label: string
+  revision: string
+  updatedAt: string
+}
+
 const EMPTY_SNAPSHOT: AssistSnapshot = {
   armed: false,
   receiving: false,
@@ -99,6 +123,8 @@ const EMPTY_SNAPSHOT: AssistSnapshot = {
   selectedProfileId: null,
   selectedProfileVersionHash: null,
   selectedPlaybookId: null,
+  selectedIdentityId: null,
+  selectedIdentityVersionHash: null,
   currentExchangeId: null,
   capturing: false,
   contextGeneration: 0,
@@ -137,7 +163,9 @@ function compactModelName(model: string | null) {
 export default function LiveAssistPage() {
   const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT)
   const [profiles, setProfiles] = useState<ProfileChoice[]>([])
+  const [identities, setIdentities] = useState<IdentityChoice[]>([])
   const [selectedProfile, setSelectedProfile] = useState('')
+  const [selectedIdentity, setSelectedIdentity] = useState('')
   const [booting, setBooting] = useState(true)
   const [actionError, setActionError] = useState<string | null>(null)
   const paintMeasurementPending = useRef(new Set<string>())
@@ -152,15 +180,20 @@ export default function LiveAssistPage() {
     const boot = async () => {
       try {
         const isVisible = await getCurrentWindow().isVisible()
-        const [next, availableProfiles] = await Promise.all([
+        const [next, availableProfiles, availableIdentities] = await Promise.all([
           invoke<AssistSnapshot>(isVisible ? 'assist_arm' : 'assist_get_snapshot'),
           invoke<ProfileChoice[]>('assist_list_profiles'),
+          invoke<IdentityChoice[]>('assist_list_identities'),
         ])
         if (!active) return
         setSnapshot(next)
         setProfiles(availableProfiles)
+        setIdentities(availableIdentities)
         if (next.selectedProfileId && next.selectedProfileVersionHash && next.selectedPlaybookId) {
           setSelectedProfile(`${next.selectedProfileId}|${next.selectedProfileVersionHash}|${next.selectedPlaybookId}`)
+        }
+        if (next.selectedIdentityId && next.selectedIdentityVersionHash) {
+          setSelectedIdentity(`${next.selectedIdentityId}|${next.selectedIdentityVersionHash}`)
         }
       } catch (error) {
         if (active) setActionError(errorMessage(error))
@@ -203,6 +236,14 @@ export default function LiveAssistPage() {
       setSelectedProfile('')
     }
   }, [snapshot.selectedPlaybookId, snapshot.selectedProfileId, snapshot.selectedProfileVersionHash])
+
+  useEffect(() => {
+    if (snapshot.selectedIdentityId && snapshot.selectedIdentityVersionHash) {
+      setSelectedIdentity(`${snapshot.selectedIdentityId}|${snapshot.selectedIdentityVersionHash}`)
+    } else {
+      setSelectedIdentity('')
+    }
+  }, [snapshot.selectedIdentityId, snapshot.selectedIdentityVersionHash])
 
   const currentIndex = useMemo(
     () => snapshot.exchanges.findIndex(exchange => exchange.id === snapshot.currentExchangeId),
@@ -280,6 +321,16 @@ export default function LiveAssistPage() {
     void run(() => invoke<AssistSnapshot>('assist_set_profile', { profileId, profileVersionHash, playbookId }))
   }
 
+  const chooseIdentity = (value: string) => {
+    setSelectedIdentity(value)
+    if (!value) {
+      void run(() => invoke<AssistSnapshot>('assist_clear_identity'))
+      return
+    }
+    const [identityId, identityVersionHash] = value.split('|')
+    void run(() => invoke<AssistSnapshot>('assist_set_identity', { identityId, identityVersionHash }))
+  }
+
   const startWindowDrag = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
     const target = event.target as HTMLElement
@@ -320,6 +371,15 @@ export default function LiveAssistPage() {
 
       <div className="grid h-[calc(100vh-2.75rem)] grid-cols-[210px_1fr]">
         <aside className="border-r border-white/10 p-3">
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">Professional identity</label>
+          <select value={selectedIdentity} onChange={event => chooseIdentity(event.target.value)} className="mb-3 w-full rounded-md border border-white/10 bg-slate-900 px-2 py-1.5 text-xs text-slate-200">
+            <option value="">No professional identity</option>
+            {identities.map(identity => (
+              <option key={identity.identityId} value={`${identity.identityId}|${identity.identityVersionHash}`}>
+                {identity.identityName} · {identity.roleTitle}
+              </option>
+            ))}
+          </select>
           <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">Meeting lens</label>
           <select value={selectedProfile} onChange={event => chooseProfile(event.target.value)} className="mb-3 w-full rounded-md border border-white/10 bg-slate-900 px-2 py-1.5 text-xs text-slate-200">
             <option value="">General guidance</option>
@@ -395,21 +455,30 @@ export default function LiveAssistPage() {
                 <>
                   <h1 className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">Your response</h1>
                   <p className="max-w-3xl text-lg font-semibold leading-7 text-white">{current.answer}</p>
-                  <button
-                    type="button"
-                    disabled={current.status !== 'complete' || current.detailStatus === 'requesting' || current.detailStatus === 'streaming'}
-                    onClick={() => void run(() => invoke<AssistSnapshot>('assist_request_detail', { exchangeId: current.id }))}
-                    className="mt-3 rounded-md bg-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/15 disabled:opacity-40"
-                  >
-                    {current.detailStatus === 'requesting' || current.detailStatus === 'streaming' ? 'Adding detail…' : current.detail ? 'Refresh detail' : 'More detail'}
-                  </button>
+                  {current.identityId && (
+                    <p className="mt-2 max-w-3xl text-[10px] leading-4 text-slate-500">
+                      {current.groundingSources.length > 0
+                        ? `Grounded in: ${current.groundingSources.map(source => `${source.label} · ${source.revision} · updated ${new Date(source.updatedAt).toLocaleDateString()}`).join(' · ')}`
+                        : 'No professional-identity source matched this question.'}
+                    </p>
+                  )}
+                  {!current.profileId && (
+                    <button
+                      type="button"
+                      disabled={current.status !== 'complete' || current.detailStatus === 'requesting' || current.detailStatus === 'streaming'}
+                      onClick={() => void run(() => invoke<AssistSnapshot>('assist_request_detail', { exchangeId: current.id }))}
+                      className="mt-3 rounded-md bg-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/15 disabled:opacity-40"
+                    >
+                      {current.detailStatus === 'requesting' || current.detailStatus === 'streaming' ? 'Adding detail…' : current.detail ? 'Refresh detail' : 'More detail'}
+                    </button>
+                  )}
                 </>
               )}
-              {current.detailTruncated && (
+              {!current.profileId && current.detailTruncated && (
                 <p className="mt-2 text-xs font-semibold text-amber-300">Partial detail — response limit reached.</p>
               )}
-              {current.detailError && <p className="mt-2 text-xs text-red-300">{current.detailError}</p>}
-              {current.detail && <p className="mt-3 max-w-3xl border-l-2 border-slate-700 pl-3 text-sm leading-6 text-slate-300">{current.detail}</p>}
+              {!current.profileId && current.detailError && <p className="mt-2 text-xs text-red-300">{current.detailError}</p>}
+              {!current.profileId && current.detail && <p className="mt-3 max-w-3xl border-l-2 border-slate-700 pl-3 text-sm leading-6 text-slate-300">{current.detail}</p>}
               {(current.timings.transcriptionMs || current.timings.requestToFirstTokenMs) && (
                 <p className="mt-4 text-[10px] text-slate-500">
                   stop → visible {current.timings.stopToVisibleTextMs ?? 'measuring…'} ms · local transcript {current.timings.transcriptionMs ?? '—'} ms · cloud first token {current.timings.requestToFirstTokenMs ?? '—'} ms · complete {current.timings.requestToCompleteMs ?? '—'} ms · build {current.buildRevision}

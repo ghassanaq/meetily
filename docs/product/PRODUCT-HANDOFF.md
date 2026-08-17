@@ -25,12 +25,13 @@ Extend Meetily with the following capabilities without removing its existing fea
 
 ### Expert profiles and playbooks
 
-- Add schema-validated, declarative Expert Profiles.
-- Initial perspectives: Meeting Coach, CEO, Head of Unit/Product, and HR Manager.
-- A profile controls objectives, perspective, style, boundaries, retrieval policy, playbooks, and output schema. It grants no real-world authority.
-- Profiles contain data only: no scripts, shell commands, native libraries, tools, or hidden permissions.
+- Keep professional identity and meeting behavior as two explicit, independently versioned layers.
+- A **Professional Identity Profile** represents the user for a meeting. It may contain the user's CV, TORs, responsibilities, authority and approval limits, stakeholders, active projects, current commitments, and dated source records. It records authority; it does not grant authority.
+- An **Expert Lens / Meeting Playbook** controls how the selected identity responds: objective, perspective, tone, boundaries, response length and form, retrieval policy, and meeting-specific guidance. Initial lenses include Meeting Coach, CEO, Head of Unit/Product, HR Manager, and Head of Mission workshop use.
+- The existing phase-one Expert Profile schema remains the declarative lens layer until a reviewed rename/migration separates its terminology in storage and UI.
+- Profiles and lenses contain data only: no scripts, shell commands, native libraries, tools, network targets, or hidden permissions.
 - Provide create, edit, import, export, activate, version, and delete workflows.
-- Profile switches are explicit and should not relabel an answer produced under another profile.
+- Identity and lens switches are explicit and should not relabel an answer produced under another selection.
 
 ### Evaluation-first customization
 

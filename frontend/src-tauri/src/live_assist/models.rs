@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::professional_identity::GroundingSource;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AssistDataClass {
@@ -53,6 +55,8 @@ pub struct AssistExchange {
     pub status: AssistExchangeStatus,
     pub question: String,
     pub answer: String,
+    pub answer_word_count: Option<u32>,
+    pub answer_format_warnings: Vec<String>,
     pub detail: String,
     pub detail_status: Option<AssistExchangeStatus>,
     pub detail_truncated: bool,
@@ -61,6 +65,9 @@ pub struct AssistExchange {
     pub profile_id: Option<Uuid>,
     pub profile_version_hash: Option<String>,
     pub playbook_id: Option<Uuid>,
+    pub identity_id: Option<Uuid>,
+    pub identity_version_hash: Option<String>,
+    pub grounding_sources: Vec<GroundingSource>,
     pub generation_id: u64,
     pub build_revision: String,
     pub created_at: String,
@@ -83,6 +90,15 @@ pub struct AssistPlaybookChoice {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistIdentityChoice {
+    pub identity_id: Uuid,
+    pub identity_version_hash: String,
+    pub identity_name: String,
+    pub role_title: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistSnapshot {
@@ -98,6 +114,8 @@ pub struct AssistSnapshot {
     pub selected_profile_id: Option<Uuid>,
     pub selected_profile_version_hash: Option<String>,
     pub selected_playbook_id: Option<Uuid>,
+    pub selected_identity_id: Option<Uuid>,
+    pub selected_identity_version_hash: Option<String>,
     pub current_exchange_id: Option<Uuid>,
     pub capturing: bool,
     pub context_generation: u64,
