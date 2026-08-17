@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -223,9 +223,16 @@ export default function LiveAssistPage() {
     void run(() => invoke<AssistSnapshot>('assist_set_profile', { profileId, profileVersionHash, playbookId }))
   }
 
+  const startWindowDrag = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    const target = event.target as HTMLElement
+    if (target.closest('button, select, input, textarea, a, [data-no-drag]')) return
+    void getCurrentWindow().startDragging()
+  }
+
   return (
     <main className="h-screen overflow-hidden bg-slate-950 text-slate-100">
-      <div data-tauri-drag-region className="flex h-11 items-center gap-3 border-b border-white/10 px-4">
+      <div onMouseDown={startWindowDrag} className="flex h-11 cursor-move select-none items-center gap-3 border-b border-white/10 px-4">
         <Sparkles className="h-4 w-4 text-cyan-300" />
         <span className="text-sm font-semibold">Live Assist</span>
         <StatePill snapshot={snapshot} />
