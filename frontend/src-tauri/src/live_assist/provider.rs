@@ -2,10 +2,12 @@ use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 pub const DEFAULT_ENDPOINT: &str = "https://api.deepseek.com/chat/completions";
 pub const DEFAULT_MODEL: &str = "deepseek-v4-pro";
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct AssistProviderConfig {
@@ -43,9 +45,21 @@ pub struct AssistMessage {
     pub content: String,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct StreamCompletion {
-    pub finish_reason: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamCompletion {
+    Stop,
+    Length,
+}
+
+impl StreamCompletion {
+    pub fn require_stop(self) -> Result<()> {
+        match self {
+            Self::Stop => Ok(()),
+            Self::Length => Err(anyhow!(
+                "Live Assist provider stopped because the response reached its token limit"
+            )),
+        }
+    }
 }
 
 pub async fn stream_chat(
@@ -73,13 +87,17 @@ pub async fn stream_chat(
             body["thinking"] = json!({ "type": "disabled" });
         }
     }
-    let response = client
+    let request = client
         .post(&config.endpoint)
         .bearer_auth(&config.api_key)
         .json(&body)
-        .send()
-        .await
-        .context("failed to contact Live Assist provider")?;
+        .send();
+    let response = tokio::select! {
+        _ = cancellation.cancelled() => {
+            return Err(anyhow!("Live Assist generation was interrupted"));
+        }
+        response = request => response.context("failed to contact Live Assist provider")?,
+    };
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -91,17 +109,25 @@ pub async fn stream_chat(
 
     let mut stream = response.bytes_stream();
     let mut parser = SseParser::default();
-    let mut completion = StreamCompletion::default();
+    let mut finish_reason = None;
     loop {
         let next = tokio::select! {
             _ = cancellation.cancelled() => return Err(anyhow!("Live Assist generation was interrupted")),
-            next = stream.next() => next,
+            next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()) => {
+                next.map_err(|_| anyhow!("Live Assist provider stream timed out"))?
+            },
         };
-        let Some(chunk) = next else { break };
+        let Some(chunk) = next else {
+            let pending = parser.finish()?;
+            if pending.len() == 1 && pending[0] == "[DONE]" {
+                return classify_completion(finish_reason.as_deref());
+            }
+            return Err(anyhow!("Live Assist provider stream ended without [DONE]"));
+        };
         let chunk = chunk.context("Live Assist stream failed")?;
         for payload in parser.push(&chunk)? {
             if payload == "[DONE]" {
-                return Ok(completion);
+                return classify_completion(finish_reason.as_deref());
             }
             let value: Value = serde_json::from_str(&payload)
                 .context("Live Assist provider emitted malformed JSON")?;
@@ -128,18 +154,23 @@ pub async fn stream_chat(
                 .pointer("/choices/0/finish_reason")
                 .and_then(Value::as_str)
             {
-                completion.finish_reason = Some(reason.to_string());
+                finish_reason = Some(reason.to_string());
             }
         }
     }
-    for payload in parser.finish()? {
-        if payload != "[DONE]" {
-            return Err(anyhow!(
-                "Live Assist stream ended without a terminal event: {payload}"
-            ));
-        }
+}
+
+fn classify_completion(finish_reason: Option<&str>) -> Result<StreamCompletion> {
+    match finish_reason {
+        Some("stop") => Ok(StreamCompletion::Stop),
+        Some("length") => Ok(StreamCompletion::Length),
+        Some(reason) => Err(anyhow!(
+            "Live Assist provider stopped with unexpected reason: {reason}"
+        )),
+        None => Err(anyhow!(
+            "Live Assist provider completed without a finish reason"
+        )),
     }
-    Ok(completion)
 }
 
 #[derive(Default)]
@@ -235,5 +266,19 @@ mod tests {
         assert!(!is_deepseek_endpoint(
             "https://api.openai.com/v1/chat/completions"
         ));
+    }
+
+    #[test]
+    fn completion_reasons_are_closed_and_length_requires_explicit_handling() {
+        let stopped = classify_completion(Some("stop")).unwrap();
+        assert_eq!(stopped, StreamCompletion::Stop);
+        assert!(stopped.require_stop().is_ok());
+
+        let limited = classify_completion(Some("length")).unwrap();
+        assert_eq!(limited, StreamCompletion::Length);
+        assert!(limited.require_stop().is_err());
+
+        assert!(classify_completion(Some("content_filter")).is_err());
+        assert!(classify_completion(None).is_err());
     }
 }

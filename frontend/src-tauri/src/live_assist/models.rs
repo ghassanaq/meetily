@@ -35,6 +35,10 @@ pub struct AssistTimings {
     pub transcription_ms: Option<u64>,
     pub request_to_first_token_ms: Option<u64>,
     pub request_to_complete_ms: Option<u64>,
+    pub stop_to_first_delta_ms: Option<u64>,
+    pub first_delta_at_unix_ms: Option<u64>,
+    pub first_delta_to_paint_ms: Option<u64>,
+    pub stop_to_visible_text_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -51,12 +55,14 @@ pub struct AssistExchange {
     pub answer: String,
     pub detail: String,
     pub detail_status: Option<AssistExchangeStatus>,
+    pub detail_truncated: bool,
     pub detail_error: Option<String>,
     pub error: Option<String>,
     pub profile_id: Option<Uuid>,
     pub profile_version_hash: Option<String>,
     pub playbook_id: Option<Uuid>,
     pub generation_id: u64,
+    pub build_revision: String,
     pub created_at: String,
     pub timings: AssistTimings,
 }
@@ -88,6 +94,10 @@ pub struct AssistSnapshot {
     pub provider_configured: bool,
     pub provider_name: Option<String>,
     pub model_name: Option<String>,
+    pub stream_error: Option<String>,
+    pub selected_profile_id: Option<Uuid>,
+    pub selected_profile_version_hash: Option<String>,
+    pub selected_playbook_id: Option<Uuid>,
     pub current_exchange_id: Option<Uuid>,
     pub capturing: bool,
     pub context_generation: u64,

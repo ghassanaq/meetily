@@ -9,9 +9,10 @@ It does not replace or modify Meetily's existing recording, transcription, works
 ## Interaction contract
 
 - The dedicated Assist stream retains the latest 60 seconds of system audio in RAM.
-- Holding **Ctrl+Alt+Space** starts a new question capture. Four seconds before the press are included. Releasing closes the clip and starts local transcription.
-- Holding **Ctrl+Alt+Shift+Space** captures a follow-up. Its parent is the exchange displayed when capture starts; later navigation cannot retarget it.
-- The overlay streams a two-or-three-sentence first-person response written as the user's own ready-to-speak words. It contains no coaching labels or instructions. Longer detail is a separate, on-demand provider request.
+- Pressing **Ctrl+Alt+Space** once starts a new question capture. Four seconds before the press are included. Pressing either capture shortcut again closes the clip and starts local transcription.
+- Pressing **Ctrl+Alt+Shift+Space** once starts a follow-up. Its parent is the exchange displayed when capture starts; later navigation cannot retarget it.
+- **Escape** discards an active capture. Restart is explicit and never silently replaces or submits the wrong clip. A capture auto-submits at 50 seconds, before the 60-second RAM window can be exhausted.
+- The overlay streams a two-or-three-sentence first-person response written as the user's own ready-to-speak words. It contains no coaching labels or instructions. Longer detail is a separate, on-demand provider request. A primary answer must finish normally; detail stopped explicitly by the provider's token limit may remain visible only with a **Partial detail** warning. Unknown, malformed, or network-failed streams are discarded.
 - Previous and next navigation allow an interruption to be handled and the earlier answer to be revisited.
 - A new capture interrupts an unfinished provider stream. Generation IDs prevent late chunks from replacing the current result.
 
@@ -23,7 +24,7 @@ Every app launch starts in **Private** mode. A Private exchange is transcribed l
 
 The privacy state is always visible in the overlay. If the configured provider is unavailable, the app keeps the transcript and reports the failure; there is no local-LLM fallback in this prototype.
 
-Expert Profiles and Meeting Playbooks only shape the prompt. They remain declarative data and cannot execute tools or scripts. Provider tool-call output is rejected.
+Expert Profiles and Meeting Playbooks are optional, explicitly selected expert lenses. They only shape objectives, style, boundaries, and playbook guidance; they are not treated as the user's identity, biography, authority, or meeting history. They remain declarative data and cannot execute tools or scripts. Provider tool-call output is rejected.
 
 ## Local configuration
 
@@ -50,11 +51,14 @@ Run the prototype in five real meetings:
 
 1. Treat meeting one as calibration for learning the signal gesture.
 2. In meetings two through five, capture only turns where a suggestion could affect what you say next.
-3. After each meeting, record one short usefulness note and whether the timing was acceptable.
-4. Use the built-in per-exchange timings for local transcription, cloud first token, and cloud completion.
-5. If the stream enters **Stalled**, treat that interval as unevaluable and the meeting as only partially evaluated.
+3. After each meeting, record whether the response was useful, whether the timing was acceptable, and one `Missing context:` note for every inadequate exchange.
+4. Use the built-in per-exchange timings for stop-to-visible text, local transcription, cloud first token, and cloud completion. Stop-to-visible includes provider streaming, the 250 ms snapshot polling interval, React rendering, and paint acknowledgement; component timings remain available for diagnosis.
+5. Every exchange displays the embedded Git build revision so trial results remain attributable to the exact executable that produced them.
+6. Silence is not a fault. If the CPAL stream reports **Audio fault**, treat that interval as unevaluable and the meeting as only partially evaluated.
 
 Proceed only if the suggestions are actually used. Revise delivery if the content is useful but late or distracting. Stop the Live Assist slice if the answers are consistently ignored even when correctly captured.
+
+Provider behavior is measured separately from deterministic CI. Run `scripts/test-live-assist-voice.cmd` on the reference PC to exercise the production prompt and streaming provider path against the unspoken-Friday-commitment fixture. The ignored harness rejects coaching prefixes and assistant meta-language, verifies that an unspoken draft is not converted into meeting history, and appends timestamped prompt/model/latency results under the ignored `target/` directory without recording the API key.
 
 ## Deliberate non-goals
 
@@ -64,3 +68,4 @@ Proceed only if the suggestions are actually used. Revise delivery if the conten
 - No local language-model answer fallback.
 - No changes to the existing 600 ms recording mixer window; that pipeline is measured separately before any tuning.
 - No automatic provider enablement. Cloud access is an explicit per-launch choice.
+- No Professional Identity Profile or document retrieval yet. CV, TOR, project, authority, stakeholder, and commitment fields will be designed only from repeated `Missing context:` evidence gathered in the five meetings. Adding those documents is retrieval/context, not model fine-tuning.

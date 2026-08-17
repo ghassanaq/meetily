@@ -1,7 +1,12 @@
 #[path = "build/ffmpeg.rs"]
 mod ffmpeg;
 
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
 fn main() {
+    emit_build_revision();
+
     // GPU Acceleration Detection and Build Guidance
     detect_and_report_gpu_capabilities();
 
@@ -19,6 +24,68 @@ fn main() {
     ffmpeg::ensure_ffmpeg_binary();
 
     tauri_build::build()
+}
+
+fn emit_build_revision() {
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
+    let repository_root = manifest_dir.join("../..");
+    let revision = git_stdout(&repository_root, &["rev-parse", "--short=12", "HEAD"])
+        .unwrap_or_else(|| "unknown".to_string());
+    let relevant_status = git_stdout(
+        &repository_root,
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+            "--",
+            "frontend/src-tauri/src/live_assist",
+            "frontend/src/app/live-assist",
+            "docs/product/LIVE_ASSIST_PROTOTYPE.md",
+            "scripts",
+        ],
+    )
+    .unwrap_or_default();
+    let build_revision = if relevant_status.is_empty() {
+        revision
+    } else {
+        format!("{revision}-dirty")
+    };
+    println!("cargo:rustc-env=MEETILY_BUILD_REVISION={build_revision}");
+
+    println!(
+        "cargo:rerun-if-changed={}",
+        repository_root.join(".git/HEAD").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        repository_root
+            .join("frontend/src-tauri/src/live_assist")
+            .display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        repository_root
+            .join("frontend/src/app/live-assist")
+            .display()
+    );
+    if let Some(reference) = git_stdout(&repository_root, &["symbolic-ref", "-q", "HEAD"]) {
+        println!(
+            "cargo:rerun-if-changed={}",
+            repository_root.join(".git").join(reference).display()
+        );
+    }
+}
+
+fn git_stdout(repository_root: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repository_root)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Detects GPU acceleration capabilities and provides build guidance
