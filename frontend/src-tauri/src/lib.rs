@@ -50,6 +50,7 @@ pub mod onboarding;
 pub mod openai;
 pub mod anthropic;
 pub mod groq;
+pub mod live_assist;
 pub mod openrouter;
 pub mod parakeet_engine;
 pub mod state;
@@ -396,6 +397,8 @@ pub fn run() {
 
     let mut builder = tauri::Builder::default();
 
+    // This must be the first plugin so a second launch exits before it can
+    // register shortcuts, create windows, or initialize application state.
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
@@ -405,14 +408,50 @@ pub fn run() {
                 cwd
             );
 
-            tray::focus_main_window(app);
+            if args.iter().any(|arg| arg == "--live-assist") {
+                live_assist::enter_overlay_mode(app);
+            } else {
+                tray::focus_main_window(app);
+            }
         }));
+    }
+
+    {
+        use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
+
+        let capture_shortcut: Shortcut = live_assist::CAPTURE_SHORTCUT
+            .parse()
+            .expect("Live Assist capture shortcut must be valid");
+        let follow_up_shortcut: Shortcut = live_assist::FOLLOW_UP_SHORTCUT
+            .parse()
+            .expect("Live Assist follow-up shortcut must be valid");
+        builder = builder.plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, shortcut, event| {
+                    let pressed = event.state() == ShortcutState::Pressed;
+                    if shortcut == &capture_shortcut {
+                        live_assist::handle_global_shortcut(
+                            app,
+                            live_assist::AssistExchangeKind::NewQuestion,
+                            pressed,
+                        );
+                    } else if shortcut == &follow_up_shortcut {
+                        live_assist::handle_global_shortcut(
+                            app,
+                            live_assist::AssistExchangeKind::FollowUp,
+                            pressed,
+                        );
+                    }
+                })
+                .build(),
+        );
     }
 
     builder
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
+        .manage(live_assist::LiveAssistState::default())
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
         .manage(Arc::new(RwLock::new(
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
@@ -429,6 +468,13 @@ pub fn run() {
                 log::info!("Legacy storage migration result: {:?}", migration_report);
             }
             _app.manage(app_paths);
+
+            if let Err(error) = live_assist::register_global_shortcuts(_app.handle()) {
+                log::warn!("Failed to register Live Assist shortcuts: {error}");
+            }
+            if std::env::args().any(|argument| argument == "--live-assist") {
+                live_assist::enter_overlay_mode(_app.handle());
+            }
 
             log::info!("Application setup complete");
 
@@ -698,6 +744,22 @@ pub fn run() {
             expert_profiles::commands::profile_restore,
             expert_profiles::commands::profile_delete,
             expert_profiles::commands::summary_generate_with_profile,
+            // Disposable Live Assist prototype
+            live_assist::assist_arm,
+            live_assist::assist_disarm,
+            live_assist::assist_get_snapshot,
+            live_assist::assist_set_cloud_enabled,
+            live_assist::assist_select_exchange,
+            live_assist::assist_record_first_paint,
+            live_assist::assist_set_profile,
+            live_assist::assist_clear_profile,
+            live_assist::assist_list_profiles,
+            live_assist::assist_start_capture,
+            live_assist::assist_toggle_capture,
+            live_assist::assist_stop_capture,
+            live_assist::assist_discard_capture,
+            live_assist::assist_restart_capture,
+            live_assist::assist_request_detail,
             // Template commands
             summary::template_commands::api_list_templates,
             summary::template_commands::api_get_template_details,

@@ -12,6 +12,7 @@
     "app": {
         "windows": [
             {
+                "label": "main",
                 "title": "meetily",
                 "width": 1100,
                 "height": 700,
@@ -19,6 +20,23 @@
                 "fullscreen": false,
                 "theme": "Light",
                 "decorations": true
+            },
+            {
+                "label": "live-assist",
+                "title": "Live Assist",
+                "url": "/live-assist",
+                "width": 820,
+                "height": 300,
+                "minWidth": 620,
+                "minHeight": 230,
+                "resizable": true,
+                "fullscreen": false,
+                "theme": "Light",
+                "decorations": false,
+                "alwaysOnTop": true,
+                "skipTaskbar": true,
+                "focus": false,
+                "visible": false
             }
         ],
         "macOSPrivateApi": true,
@@ -71,6 +89,20 @@
                                 }
                             ]
                         }
+                    ]
+                },
+                {
+                    "identifier": "live-assist",
+                    "description": "Minimal capability for the Live Assist overlay",
+                    "windows": [
+                        "live-assist"
+                    ],
+                    "permissions": [
+                        "core:event:default",
+                        "core:window:default",
+                        "core:window:allow-start-dragging",
+                        "core:window:allow-hide",
+                        "core:window:allow-close"
                     ]
                 }
             ]
