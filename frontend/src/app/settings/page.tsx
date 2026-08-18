@@ -11,7 +11,6 @@ import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
 import { BetaSettings } from '@/components/BetaSettings';
 import { ExpertProfilesSettings } from '@/components/ExpertProfilesSettings';
-import { ProfessionalIdentitySettings } from '@/components/ProfessionalIdentitySettings';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
@@ -128,10 +127,7 @@ export default function SettingsPage() {
               <SummaryModelSettings />
             </TabsContent>
             <TabsContent value="expertProfiles">
-              <div className="space-y-6">
-                <ProfessionalIdentitySettings />
-                <ExpertProfilesSettings />
-              </div>
+              <ExpertProfilesSettings />
             </TabsContent>
             <TabsContent value="beta" className="mt-6">
               <BetaSettings />

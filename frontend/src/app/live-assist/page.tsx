@@ -4,6 +4,7 @@ import { type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, us
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { LogicalSize, type PhysicalSize } from '@tauri-apps/api/dpi'
 import {
   ChevronLeft,
   ChevronRight,
@@ -15,8 +16,10 @@ import {
   Radio,
   RefreshCw,
   Sparkles,
+  UserRoundCog,
   X,
 } from 'lucide-react'
+import { ProfessionalIdentitySettings, type SavedProfessionalIdentity } from '@/components/ProfessionalIdentitySettings'
 
 type ExchangeStatus =
   | 'capturing'
@@ -168,7 +171,9 @@ export default function LiveAssistPage() {
   const [selectedIdentity, setSelectedIdentity] = useState('')
   const [booting, setBooting] = useState(true)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [identityManagerOpen, setIdentityManagerOpen] = useState(false)
   const paintMeasurementPending = useRef(new Set<string>())
+  const previousWindowSize = useRef<PhysicalSize | null>(null)
 
   const refresh = useCallback(async () => {
     const next = await invoke<AssistSnapshot>('assist_get_snapshot')
@@ -294,6 +299,37 @@ export default function LiveAssistPage() {
     }
   }, [])
 
+  const openIdentityManager = async () => {
+    try {
+      const appWindow = getCurrentWindow()
+      const size = await appWindow.outerSize()
+      previousWindowSize.current = size
+      setIdentityManagerOpen(true)
+      await appWindow.setSize(new LogicalSize(1080, 760))
+    } catch (error) {
+      setActionError(errorMessage(error))
+    }
+  }
+
+  const closeIdentityManager = async () => {
+    setIdentityManagerOpen(false)
+    const size = previousWindowSize.current
+    previousWindowSize.current = null
+    if (size) await getCurrentWindow().setSize(size).catch(() => undefined)
+  }
+
+  const identitySaved = async (saved: SavedProfessionalIdentity) => {
+    const availableIdentities = await invoke<IdentityChoice[]>('assist_list_identities')
+    setIdentities(availableIdentities)
+    const value = `${saved.identityId}|${saved.versionHash}`
+    setSelectedIdentity(value)
+    setSnapshot(await invoke<AssistSnapshot>('assist_set_identity', {
+      identityId: saved.identityId,
+      identityVersionHash: saved.versionHash,
+    }))
+    await closeIdentityManager()
+  }
+
   const toggleCapture = useCallback((kind: 'new_question' | 'follow_up') => {
     void run(() => invoke<AssistSnapshot>('assist_toggle_capture', { kind }))
   }, [run])
@@ -339,7 +375,7 @@ export default function LiveAssistPage() {
   }
 
   return (
-    <main className="h-screen overflow-hidden bg-slate-950 text-slate-100">
+    <main className="relative h-screen overflow-hidden bg-slate-950 text-slate-100">
       <div onMouseDown={startWindowDrag} className="flex h-11 cursor-move select-none items-center gap-3 border-b border-white/10 px-4">
         <Sparkles className="h-4 w-4 text-cyan-300" />
         <span className="whitespace-nowrap text-sm font-semibold">Live Assist</span>
@@ -371,7 +407,10 @@ export default function LiveAssistPage() {
 
       <div className="grid h-[calc(100vh-2.75rem)] grid-cols-[210px_1fr]">
         <aside className="border-r border-white/10 p-3">
-          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">Professional identity</label>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500">Professional identity</label>
+            <button type="button" onClick={() => void openIdentityManager()} className="flex items-center gap-1 text-[10px] font-semibold text-cyan-300 hover:text-cyan-100"><UserRoundCog className="h-3 w-3" />Manage</button>
+          </div>
           <select value={selectedIdentity} onChange={event => chooseIdentity(event.target.value)} className="mb-3 w-full rounded-md border border-white/10 bg-slate-900 px-2 py-1.5 text-xs text-slate-200">
             <option value="">No professional identity</option>
             {identities.map(identity => (
@@ -488,6 +527,11 @@ export default function LiveAssistPage() {
           )}
         </section>
       </div>
+      {identityManagerOpen && (
+        <div className="absolute inset-0 z-50">
+          <ProfessionalIdentitySettings onClose={() => void closeIdentityManager()} onSaved={identitySaved} />
+        </div>
+      )}
     </main>
   )
 }
