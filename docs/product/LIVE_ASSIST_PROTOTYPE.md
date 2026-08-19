@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Live Assist is a disposable, personal-use experiment. It tests one question: is a short suggestion useful while a meeting is still moving?
+Live Assist is a disposable, personal-use experiment. It tests whether a ready-to-speak response is useful while a meeting is still moving.
 
 It does not replace or modify Meetily's existing recording, transcription, workspace, summary, Expert Profile, or evidence workflows. It uses a separate Windows loopback stream and keeps its exchanges in memory only.
 
@@ -12,7 +12,9 @@ It does not replace or modify Meetily's existing recording, transcription, works
 - Pressing **Ctrl+Alt+Space** once starts a new question capture. Four seconds before the press are included. Pressing either capture shortcut again closes the clip and starts local transcription.
 - Pressing **Ctrl+Alt+Shift+Space** once starts a follow-up. Its parent is the exchange displayed when capture starts; later navigation cannot retarget it.
 - **Escape** discards an active capture. Restart is explicit and never silently replaces or submits the wrong clip. A capture auto-submits at 50 seconds, before the 60-second RAM window can be exhausted.
-- The overlay streams a two-or-three-sentence first-person response written as the user's own ready-to-speak words. It contains no coaching labels or instructions. Longer detail is a separate, on-demand provider request. A primary answer must finish normally; detail stopped explicitly by the provider's token limit may remain visible only with a **Partial detail** warning. Unknown, malformed, or network-failed streams are discarded.
+- **General guidance** streams a two-or-three-sentence first-person response written as the user's own ready-to-speak words. It contains no coaching labels or instructions. Longer detail remains a separate, on-demand provider request for this general mode.
+- An explicitly selected **specialized lens** streams one continuous first-person plain-text paragraph of 200–300 words. Its first two sentences are prompted as a 40–70-word complete lead, followed by a natural expansion in the same paragraph. Headings, bullets, numbered lists, line breaks, Markdown, coaching labels, and assistant meta-language are forbidden. The legacy detail request is hidden and rejected for specialized responses.
+- A primary answer must finish normally and pass its applicable deterministic safety checks. Unsafe or incomplete primary streams are discarded. Specialized whitespace is normalized, while word-count drift is retained and recorded for prompt tuning rather than destroying a usable answer. General-mode detail stopped explicitly by the provider's token limit may remain visible only with a **Partial detail** warning. Unknown, malformed, or network-failed streams are discarded.
 - Previous and next navigation allow an interruption to be handled and the earlier answer to be revisited.
 - A new capture interrupts an unfinished provider stream. Generation IDs prevent late chunks from replacing the current result.
 
@@ -24,7 +26,9 @@ Every app launch starts in **Private** mode. A Private exchange is transcribed l
 
 The privacy state is always visible in the overlay. If the configured provider is unavailable, the app keeps the transcript and reports the failure; there is no local-LLM fallback in this prototype.
 
-Expert Profiles and Meeting Playbooks are optional, explicitly selected expert lenses. They only shape objectives, style, boundaries, and playbook guidance; they are not treated as the user's identity, biography, authority, or meeting history. They remain declarative data and cannot execute tools or scripts. Provider tool-call output is rejected.
+The existing Expert Profiles and Meeting Playbooks are optional, explicitly selected expert lenses. They shape objectives, style, boundaries, and playbook guidance; they are not treated as the user's identity, biography, authority, or meeting history. They remain declarative data and cannot execute tools or scripts. Provider tool-call output is rejected.
+
+Professional identity is a separate product layer defined in [PROFESSIONAL_IDENTITY_AND_LENSES_DESIGN.md](PROFESSIONAL_IDENTITY_AND_LENSES_DESIGN.md). A selected immutable identity version supplies locally retrieved CV, TOR, project, authority, stakeholder, or commitment records. The passive grounding line names only the actual local sources and freshness metadata used for that exchange; it is never model-authored.
 
 ## Local configuration
 
@@ -64,8 +68,8 @@ Provider behavior is measured separately from deterministic CI. Run `scripts/tes
 
 - No full-meeting capture or background speaker detection.
 - No incremental transcription while a person is still speaking.
-- No database persistence, cloud history, or formal Live Assist activation/eval tables.
+- No exchange persistence, cloud history, or formal Live Assist activation/eval tables. Professional Identity versions are stored locally and immutably.
 - No local language-model answer fallback.
 - No changes to the existing 600 ms recording mixer window; that pipeline is measured separately before any tuning.
 - No automatic provider enablement. Cloud access is an explicit per-launch choice.
-- No Professional Identity Profile or document retrieval yet. CV, TOR, project, authority, stakeholder, and commitment fields will be designed only from repeated `Missing context:` evidence gathered in the five meetings. Adding those documents is retrieval/context, not model fine-tuning.
+- No arbitrary document ingestion or fine-tuning. Professional Identity accepts only its closed declarative schema and uses bounded local retrieval; future fields should still be justified by repeated `Missing context:` evidence.

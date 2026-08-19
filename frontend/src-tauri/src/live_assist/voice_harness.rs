@@ -14,51 +14,6 @@ use uuid::Uuid;
 
 use super::*;
 
-const COACHING_PREFIXES: &[&str] = &[
-    "you can say",
-    "say this",
-    "tell them",
-    "you could",
-    "consider saying",
-    "i'd suggest saying",
-];
-
-const META_LANGUAGE: &[&str] = &[
-    "proposed response",
-    "the assistant",
-    "generated answer",
-    "previous suggestion",
-    "as generated",
-];
-
-fn validate_speakable_response(output: &str) -> Result<()> {
-    let normalized = output
-        .trim_start_matches(|character: char| {
-            character.is_whitespace()
-                || matches!(
-                    character,
-                    '"' | '\'' | '*' | '_' | '`' | '#' | '>' | '-' | '•' | ':'
-                )
-        })
-        .to_lowercase();
-    if normalized.is_empty() {
-        return Err(anyhow!("provider returned an empty response"));
-    }
-    if let Some(prefix) = COACHING_PREFIXES
-        .iter()
-        .find(|prefix| normalized.starts_with(**prefix))
-    {
-        return Err(anyhow!("response starts with coaching language: {prefix}"));
-    }
-    if let Some(term) = META_LANGUAGE
-        .iter()
-        .find(|term| normalized.contains(**term))
-    {
-        return Err(anyhow!("response contains assistant meta-language: {term}"));
-    }
-    Ok(())
-}
-
 fn validate_false_history_fixture(output: &str) -> Result<()> {
     let normalized = output.to_lowercase();
     let false_commitments = [
@@ -125,6 +80,8 @@ fn parent_exchange() -> AssistExchange {
         status: AssistExchangeStatus::Complete,
         question: "When can you send the revised timeline?".to_string(),
         answer: "I'll have the revised timeline to you by Friday.".to_string(),
+        answer_word_count: None,
+        answer_format_warnings: Vec::new(),
         detail: String::new(),
         detail_status: None,
         detail_truncated: false,
@@ -133,6 +90,9 @@ fn parent_exchange() -> AssistExchange {
         profile_id: None,
         profile_version_hash: None,
         playbook_id: None,
+        identity_id: None,
+        identity_version_hash: None,
+        grounding_sources: Vec::new(),
         generation_id: 1,
         build_revision: env!("MEETILY_BUILD_REVISION").to_string(),
         created_at: Utc::now().to_rfc3339(),
@@ -164,7 +124,8 @@ async fn reference_provider_preserves_voice_and_does_not_invent_commitment_histo
         .expect("configure MEETING_ASSISTANT_LIVE_API_KEY before running the voice harness");
     let parent = parent_exchange();
     let question = "What did you commit to?";
-    let messages = build_answer_messages(question, Some(&parent), "{}");
+    let messages =
+        build_answer_messages(question, Some(&parent), "{}", "{}", AnswerContract::General);
     let fixture_hash = sha256(
         serde_json::to_vec(&json!({
             "parent_question": parent.question,
@@ -173,7 +134,7 @@ async fn reference_provider_preserves_voice_and_does_not_invent_commitment_histo
         }))
         .unwrap(),
     );
-    let prompt_template_hash = sha256(ANSWER_SYSTEM_PROMPT_TEMPLATE);
+    let prompt_template_hash = sha256(GENERAL_ANSWER_SYSTEM_PROMPT_TEMPLATE);
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(90))
