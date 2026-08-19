@@ -134,7 +134,6 @@ struct PromptIdentityRecord<'a> {
     source_label: &'a str,
     source_revision: &'a str,
     updated_at: &'a str,
-    conflicting_current_sources: bool,
 }
 
 struct Candidate<'a> {
@@ -276,10 +275,11 @@ pub fn retrieve_identity_context(
             valid_until: record.valid_until.as_deref(),
             conflict_key: record.conflict_key.as_deref(),
             score_text: format!(
-                "{} {} {}",
+                "{} {} {} {}",
                 record.title,
                 record.content,
-                record.tags.join(" ")
+                record.tags.join(" "),
+                record.conflict_key.as_deref().unwrap_or_default()
             ),
         });
     }
@@ -321,7 +321,7 @@ pub fn retrieve_identity_context(
         }
     }
 
-    let conflicting_keys = candidates
+    let conflicting_key_counts = candidates
         .iter()
         .filter(|candidate| !is_expired(candidate.valid_until, now))
         .filter_map(|candidate| candidate.conflict_key)
@@ -340,6 +340,24 @@ pub fn retrieve_identity_context(
         })
         .filter(|(score, _)| *score > 0)
         .collect();
+    let mut relevant_conflicting_keys = ranked
+        .iter()
+        .filter_map(|(_, candidate)| candidate.conflict_key)
+        .filter(|key| {
+            conflicting_key_counts
+                .get(*key)
+                .is_some_and(|count| *count > 1)
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    relevant_conflicting_keys.sort();
+    relevant_conflicting_keys.dedup();
+    if !relevant_conflicting_keys.is_empty() {
+        return Err(anyhow!(
+            "professional identity has conflicting current sources for: {}",
+            relevant_conflicting_keys.join(", ")
+        ));
+    }
     ranked.sort_by(|(left_score, left), (right_score, right)| {
         right_score
             .cmp(left_score)
@@ -357,10 +375,6 @@ pub fn retrieve_identity_context(
             source_label: &candidate.source.label,
             source_revision: &candidate.source.revision,
             updated_at: candidate.updated_at,
-            conflicting_current_sources: candidate
-                .conflict_key
-                .and_then(|key| conflicting_keys.get(key))
-                .is_some_and(|count| *count > 1),
         })
         .collect::<Vec<_>>();
     let sources = ranked
@@ -539,23 +553,183 @@ mod tests {
     }
 
     #[test]
-    fn current_records_with_the_same_explicit_key_are_marked_as_conflicting() {
+    fn relevant_current_records_with_the_same_explicit_key_fail_closed() {
         let mut identity = sample_identity();
-        identity.records[0].conflict_key = Some("staff-check-in-cadence".to_string());
+        identity.records[0].conflict_key = Some("cadence-rule".to_string());
         let mut conflicting = identity.records[0].clone();
         conflicting.id = Uuid::from_u128(2);
-        conflicting.content = "I run monthly staff check-ins.".to_string();
+        conflicting.title = "Alternative schedule".to_string();
+        conflicting.content = "I use a monthly rhythm.".to_string();
+        conflicting.tags = vec!["frequency".to_string()];
         identity.records.push(conflicting);
-        let result = retrieve_identity_context(
+        let error = retrieve_identity_context(
             &identity,
             "How often do I run staff check-ins?",
             DateTime::parse_from_rfc3339("2026-08-18T00:00:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
         )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("conflicting current sources for: cadence-rule"));
+    }
+
+    #[test]
+    fn unrelated_conflicts_do_not_block_or_enter_the_prompt() {
+        let mut identity = sample_identity();
+        for (id, amount) in [(2, "USD 25,000"), (3, "USD 50,000")] {
+            identity.records.push(IdentityRecord {
+                id: Uuid::from_u128(id),
+                category: IdentityRecordCategory::Authority,
+                title: "Procurement approval limit".to_string(),
+                content: format!("I may approve procurement up to {amount}."),
+                source: IdentitySource {
+                    label: format!("Delegation schedule {id}"),
+                    revision: "current".to_string(),
+                },
+                updated_at: "2026-08-12T00:00:00Z".to_string(),
+                valid_until: None,
+                conflict_key: Some("procurement-approval-limit".to_string()),
+                tags: vec!["procurement".to_string(), "finance".to_string()],
+            });
+        }
+        let result = retrieve_identity_context(
+            &identity,
+            "How do I maintain staff duty of care and safety?",
+            DateTime::parse_from_rfc3339("2026-08-18T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        )
         .unwrap();
-        assert_eq!(result.sources.len(), 2);
-        assert!(result.prompt_json.contains("\"conflicting_current_sources\":true"));
+        assert_eq!(result.sources.len(), 1);
+        assert_eq!(result.sources[0].record_id, Uuid::from_u128(1));
+        assert!(!result.prompt_json.contains("procurement"));
+        assert!(!result.prompt_json.contains("25,000"));
+        assert!(!result.prompt_json.contains("50,000"));
+    }
+
+    #[test]
+    fn retrieval_excludes_non_matching_facts() {
+        let mut identity = sample_identity();
+        identity.records.push(IdentityRecord {
+            id: Uuid::from_u128(2),
+            category: IdentityRecordCategory::Commitment,
+            title: "Vehicle replacement".to_string(),
+            content: "I committed to replace the field vehicle in November.".to_string(),
+            source: IdentitySource {
+                label: "Fleet plan".to_string(),
+                revision: "2026-Q3".to_string(),
+            },
+            updated_at: "2026-08-12T00:00:00Z".to_string(),
+            valid_until: None,
+            conflict_key: None,
+            tags: vec!["fleet".to_string()],
+        });
+        let result = retrieve_identity_context(
+            &identity,
+            "How do I maintain staff duty of care and safety?",
+            DateTime::parse_from_rfc3339("2026-08-18T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+        assert_eq!(result.sources.len(), 1);
+        assert!(!result.prompt_json.contains("field vehicle"));
+        assert!(!result.prompt_json.contains("Fleet plan"));
+    }
+
+    #[test]
+    fn retrieval_cap_is_deterministic_for_large_profiles() {
+        let mut identity = sample_identity();
+        for id in 2..=12 {
+            let mut record = identity.records[0].clone();
+            record.id = Uuid::from_u128(id);
+            record.source.label = format!("Safety source {id}");
+            identity.records.push(record);
+        }
+        let result = retrieve_identity_context(
+            &identity,
+            "How do I maintain staff safety?",
+            DateTime::parse_from_rfc3339("2026-08-18T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+        assert_eq!(result.sources.len(), MAX_RETRIEVED_SOURCES);
+        assert_eq!(result.sources[0].record_id, Uuid::from_u128(1));
+        assert_eq!(result.sources[7].record_id, Uuid::from_u128(8));
+    }
+
+    #[test]
+    fn expired_project_excludes_the_project_and_its_facts() {
+        let mut identity = sample_identity();
+        identity.projects.push(IdentityProject {
+            id: Uuid::from_u128(2),
+            name: "Project Atlas".to_string(),
+            role: "Sponsor".to_string(),
+            status: "Delivery due in September".to_string(),
+            source: IdentitySource {
+                label: "Atlas plan".to_string(),
+                revision: "2026-07".to_string(),
+            },
+            updated_at: "2026-07-01T00:00:00Z".to_string(),
+            valid_until: Some("2026-08-17T00:00:00Z".to_string()),
+            tags: vec!["delivery".to_string()],
+            facts: vec![IdentityProjectFact {
+                id: Uuid::from_u128(3),
+                content: "The Atlas delivery deadline is September 15.".to_string(),
+                source: IdentitySource {
+                    label: "Atlas milestone table".to_string(),
+                    revision: "2026-07".to_string(),
+                },
+                conflict_key: None,
+                tags: vec!["deadline".to_string()],
+            }],
+        });
+        let result = retrieve_identity_context(
+            &identity,
+            "What is the Atlas delivery deadline?",
+            DateTime::parse_from_rfc3339("2026-08-18T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+        assert!(result.sources.is_empty());
+        assert!(!result.prompt_json.contains("Atlas"));
+        assert!(!result.prompt_json.contains("September 15"));
+    }
+
+    #[test]
+    fn grounding_metadata_matches_the_records_in_the_prompt() {
+        let mut identity = sample_identity();
+        let mut second = identity.records[0].clone();
+        second.id = Uuid::from_u128(2);
+        second.title = "Staff escalation route".to_string();
+        second.content =
+            "I use the security focal point for urgent staff safety escalation.".to_string();
+        second.source = IdentitySource {
+            label: "Security protocol".to_string(),
+            revision: "2026-08".to_string(),
+        };
+        identity.records.push(second);
+        let result = retrieve_identity_context(
+            &identity,
+            "How do I handle staff safety escalation?",
+            DateTime::parse_from_rfc3339("2026-08-18T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+        let prompt: serde_json::Value = serde_json::from_str(&result.prompt_json).unwrap();
+        let prompt_records = prompt["records"].as_array().unwrap();
+        assert_eq!(prompt_records.len(), result.sources.len());
+        for (record, source) in prompt_records.iter().zip(&result.sources) {
+            assert_eq!(record["id"].as_str().unwrap(), source.record_id.to_string());
+            assert_eq!(record["source_label"].as_str().unwrap(), source.label);
+            assert_eq!(record["source_revision"].as_str().unwrap(), source.revision);
+            assert_eq!(record["updated_at"].as_str().unwrap(), source.updated_at);
+        }
     }
 
     #[test]
