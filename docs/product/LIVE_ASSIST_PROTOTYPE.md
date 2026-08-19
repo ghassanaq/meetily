@@ -9,8 +9,8 @@ It does not replace or modify Meetily's existing recording, transcription, works
 ## Interaction contract
 
 - The dedicated Assist stream retains the latest 60 seconds of system audio in RAM.
-- Pressing **Ctrl+Alt+Space** once starts a new question capture. Four seconds before the press are included. Pressing either capture shortcut again closes the clip and starts local transcription.
-- Pressing **Ctrl+Alt+Shift+Space** once starts a follow-up. Its parent is the exchange displayed when capture starts; later navigation cannot retarget it.
+- Pressing **F8** once starts a new question capture. Four seconds before the press are included. Pressing **F8** again closes the clip and starts local transcription.
+- Pressing **F9** once starts a follow-up. Pressing **F9** again closes the clip and starts local transcription. Its parent is the exchange displayed when capture starts; later navigation cannot retarget it.
 - **Escape** discards an active capture. Restart is explicit and never silently replaces or submits the wrong clip. A capture auto-submits at 50 seconds, before the 60-second RAM window can be exhausted.
 - **General guidance** streams a two-or-three-sentence first-person response written as the user's own ready-to-speak words. It contains no coaching labels or instructions. Longer detail remains a separate, on-demand provider request for this general mode.
 - An explicitly selected **specialized lens** streams one continuous first-person plain-text paragraph of 200–300 words. Its first two sentences are prompted as a 40–70-word complete lead, followed by a natural expansion in the same paragraph. Headings, bullets, numbered lists, line breaks, Markdown, coaching labels, and assistant meta-language are forbidden. The legacy detail request is hidden and rejected for specialized responses.

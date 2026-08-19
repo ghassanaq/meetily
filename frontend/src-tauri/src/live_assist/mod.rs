@@ -29,8 +29,8 @@ use crate::state::AppState;
 use capture::{AssistAudioStream, CaptureBuffer, CaptureMarker, CapturedClip};
 use provider::{stream_chat, AssistMessage, AssistProviderConfig};
 
-pub const CAPTURE_SHORTCUT: &str = "Ctrl+Alt+Space";
-pub const FOLLOW_UP_SHORTCUT: &str = "Ctrl+Alt+Shift+Space";
+pub const CAPTURE_SHORTCUT: &str = "F8";
+pub const FOLLOW_UP_SHORTCUT: &str = "F9";
 const MAX_CAPTURE_DURATION: Duration = Duration::from_secs(50);
 const MAX_UI_TIMING_MS: u64 = 10 * 60 * 1_000;
 const BUILD_REVISION: &str = env!("MEETILY_BUILD_REVISION");
@@ -1653,6 +1653,15 @@ pub fn enter_overlay_mode<R: Runtime>(app: &AppHandle<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_shortcuts_are_distinct_single_keys() {
+        assert_eq!(CAPTURE_SHORTCUT, "F8");
+        assert_eq!(FOLLOW_UP_SHORTCUT, "F9");
+        assert_ne!(CAPTURE_SHORTCUT, FOLLOW_UP_SHORTCUT);
+        assert!(!CAPTURE_SHORTCUT.contains('+'));
+        assert!(!FOLLOW_UP_SHORTCUT.contains('+'));
+    }
 
     fn exchange(id: Uuid, generation: u64, data_class: AssistDataClass) -> AssistExchange {
         AssistExchange {
