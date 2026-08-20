@@ -2,7 +2,7 @@
 
 Date: 2026-08-20
 
-Status: provider-free representative- and private-corpus evidence; global selector is not production-ready
+Status: provider-free representative- and private-corpus evidence; IDF/diversity experiment complete, selector not production-ready
 
 ## Configuration
 
@@ -54,6 +54,26 @@ Three deliberately diversified questions invalidated that conclusion across a 50
 
 No global floor in the measured range passed the diversified suite. Global-floor tuning is therefore a closed question for this selector: a threshold can only filter an already-ranked list; it cannot change which source produced the top candidates. The failure sits upstream in scoring, ranking, and source diversity because adjacent chunks from one source can monopolize the global top-three budget. The private ignored test now retains these 15 cases, with the 85% configuration serving as a known failing recall witness rather than a recommendation.
 
+## IDF and bundle-diversity experiment
+
+The follow-up scorer calculates smoothed inverse document frequency over the current, non-expired candidate passages in the pinned snapshot. It uses deterministic fixed-point integer arithmetic and remains fully local. Each query term contributes once at its strongest matching field; passage body is weighted above heading, tags, and provenance so a title repeated across fields cannot outscore answer-bearing text merely through duplication.
+
+On the three diversified private cases, the IDF-weighted, field-saturated raw top three produced the following diversity before bundle shortlisting:
+
+| Case | Unique sources in raw top three | Unique bundles in raw top three |
+| --- | ---: | ---: |
+| No Q&A coverage | 1 | 1 |
+| Split role and professional evidence | 2 | 1 |
+| Partial Q&A coverage plus role fact | 2 | 2 |
+
+This is an improvement over the earlier one-source top three in two cases, but not a coverage guarantee. IDF changes relative scores; it cannot require a second relevant bundle to survive the final budget.
+
+The experiment therefore adds a separate bundle-diverse shortlist. It first determines eligible bundles from the pinned snapshot and query, including deterministic routing for explicitly named projects, applies the relative floor within each eligible bundle, and then selects in rounds so one eligible bundle cannot consume every slot before another contributes its strongest passage. Interview and Q&A documents remain sources inside the project/application bundle; they do not create a fourth context scope.
+
+The new selector keeps all ten synthetic cases and the stricter synthetic private-evaluation rules green. On the first unchanged private witness, it promoted the required non-Q&A directive answer to rank 1, but also selected one application-bundle passage and one person-bundle passage. Those two irrelevant passages exceed the limit-3 precision allowance, so the 15-case private witness remains red exactly as intended.
+
+That failure localizes the remaining problem: bundle diversity now provides coverage among bundles judged eligible, but lexical bundle eligibility is not precise enough on the 39,695-word corpus. The next design decision is not another passage-score floor. Live Assist must pin an explicit active application/project selection and the retrieval policy must distinguish session-selected bundles from merely loaded contextual bundles before lexical eligibility is treated as production-ready.
+
 ## Findings produced by the spike
 
 ### Conflict relevance cannot use any body-word overlap
@@ -76,4 +96,4 @@ Weighted lexical retrieval is sufficient for the small, deliberately structured 
 
 The private regression suite supplied the missing scale and source-diversity evidence. It shows that a single global ranking and floor cannot yet retrieve split evidence reliably from the user's CV, role documents, Q&A material, and professional evidence. The anonymized fixtures remain the permanent CI mechanics test; the sensitive corpus remains outside Git behind `PROJECT_CONTEXT_PATH`.
 
-The next retrieval experiment should build a source- or bundle-diverse shortlist before the final global budget, then rerun all 15 private questions across limits 3, 5, and 8. Live Assist integration remains blocked until a selector passes both the synthetic mechanics tests and the diversified private suite.
+The IDF and bundle-diversity experiment closes the ranking-architecture question but leaves bundle eligibility open. Live Assist integration remains blocked until session-selected bundle eligibility is specified and a selector passes both the synthetic mechanics tests and the unchanged diversified private suite.

@@ -12,6 +12,10 @@ const CONTEXT_SCHEMA_VERSION: u32 = 1;
 const DOCUMENT_SCHEMA_VERSION: u32 = 1;
 const MAX_PASSAGE_WORDS: usize = 180;
 const SYNTHETIC_FIXTURE_RELATIVE_SCORE_FLOOR_PERCENT: usize = 50;
+const IDF_SCALE: usize = 100;
+const IDF_RATIO_SCALE: usize = 1024;
+const SPIKE_MIN_PERSON_ROLE_BUNDLE_QUERY_TERMS: usize = 2;
+const SPIKE_MIN_PROJECT_BUNDLE_QUERY_TERMS: usize = 3;
 const PRIVATE_CONTEXT_PATH_ENV: &str = "PROJECT_CONTEXT_PATH";
 const PRIVATE_EVALUATION_FILE: &str = "retrieval-eval.json";
 const HASH_DOMAIN: &[u8] = b"meeting-assistant-project-passage-v1\0";
@@ -111,7 +115,7 @@ struct Passage {
     content_hash: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 struct RankedPassage<'a> {
     passage: &'a Passage,
     score: usize,
@@ -514,6 +518,7 @@ fn retrieve_with_floor<'a>(
         .iter()
         .filter(|passage| passage.valid_until.map_or(true, |until| until >= now))
         .collect::<Vec<_>>();
+    let inverse_document_frequencies = inverse_document_frequencies(&query_terms, &current);
     let conflict_counts = current
         .iter()
         .filter_map(|passage| passage.conflict_key.as_deref())
@@ -525,7 +530,7 @@ fn retrieve_with_floor<'a>(
     let mut ranked = current
         .into_iter()
         .filter_map(|passage| {
-            let score = passage_score(&query_terms, passage);
+            let score = passage_score(&query_terms, &inverse_document_frequencies, passage);
             (score > 0).then_some(RankedPassage { passage, score })
         })
         .collect::<Vec<_>>();
@@ -551,14 +556,105 @@ fn retrieve_with_floor<'a>(
             .cmp(&left.score)
             .then_with(|| left.passage.passage_id.cmp(&right.passage.passage_id))
     });
-    if let Some(best_score) = ranked.first().map(|item| item.score) {
-        ranked.retain(|item| {
-            item.score.saturating_mul(100)
-                >= best_score.saturating_mul(relative_score_floor_percent)
-        });
+    Ok(select_bundle_diverse(
+        ranked,
+        &query_terms,
+        limit,
+        relative_score_floor_percent,
+    ))
+}
+
+fn select_bundle_diverse<'a>(
+    ranked: Vec<RankedPassage<'a>>,
+    query_terms: &HashSet<String>,
+    limit: usize,
+    relative_score_floor_percent: usize,
+) -> Vec<RankedPassage<'a>> {
+    let eligible_bundles = eligible_bundle_ids(query_terms, &ranked);
+    let mut bundle_order = Vec::<&str>::new();
+    let mut by_bundle = HashMap::<&str, Vec<RankedPassage<'a>>>::new();
+    for item in ranked
+        .into_iter()
+        .filter(|item| eligible_bundles.contains(item.passage.bundle_id.as_str()))
+    {
+        let bundle_id = item.passage.bundle_id.as_str();
+        if !by_bundle.contains_key(bundle_id) {
+            bundle_order.push(bundle_id);
+        }
+        by_bundle.entry(bundle_id).or_default().push(item);
     }
-    ranked.truncate(limit);
-    Ok(ranked)
+    for candidates in by_bundle.values_mut() {
+        if let Some(best_score) = candidates.first().map(|item| item.score) {
+            candidates.retain(|item| {
+                item.score.saturating_mul(100)
+                    >= best_score.saturating_mul(relative_score_floor_percent)
+            });
+        }
+    }
+
+    let mut selected = Vec::new();
+    let mut round = 0;
+    while selected.len() < limit {
+        let mut round_candidates = bundle_order
+            .iter()
+            .filter_map(|bundle_id| by_bundle.get(bundle_id).and_then(|items| items.get(round)))
+            .copied()
+            .collect::<Vec<_>>();
+        if round_candidates.is_empty() {
+            break;
+        }
+        round_candidates.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| left.passage.passage_id.cmp(&right.passage.passage_id))
+        });
+        selected.extend(
+            round_candidates
+                .into_iter()
+                .take(limit.saturating_sub(selected.len())),
+        );
+        round += 1;
+    }
+    selected
+}
+
+fn eligible_bundle_ids<'a>(
+    query_terms: &HashSet<String>,
+    ranked: &[RankedPassage<'a>],
+) -> HashSet<&'a str> {
+    let explicitly_named_projects = ranked
+        .iter()
+        .filter(|item| item.passage.scope == BundleScope::Project)
+        .filter(|item| {
+            let bundle_terms = tokenize(&format!(
+                "{} {}",
+                item.passage.bundle_id, item.passage.bundle_name
+            ));
+            !query_terms.is_disjoint(&bundle_terms)
+        })
+        .map(|item| item.passage.bundle_id.as_str())
+        .collect::<HashSet<_>>();
+
+    if !explicitly_named_projects.is_empty() {
+        return explicitly_named_projects;
+    }
+
+    ranked
+        .iter()
+        .filter(|item| {
+            let matched_terms = query_terms
+                .intersection(&passage_score_terms(item.passage))
+                .count();
+            match item.passage.scope {
+                BundleScope::Person | BundleScope::Role => {
+                    matched_terms >= SPIKE_MIN_PERSON_ROLE_BUNDLE_QUERY_TERMS
+                }
+                BundleScope::Project => matched_terms >= SPIKE_MIN_PROJECT_BUNDLE_QUERY_TERMS,
+            }
+        })
+        .map(|item| item.passage.bundle_id.as_str())
+        .collect()
 }
 
 fn conflict_key_matches(query_terms: &HashSet<String>, conflict_key: &str) -> bool {
@@ -567,19 +663,81 @@ fn conflict_key_matches(query_terms: &HashSet<String>, conflict_key: &str) -> bo
     required_matches > 0 && query_terms.intersection(&key_terms).count() >= required_matches
 }
 
-fn passage_score(query_terms: &HashSet<String>, passage: &Passage) -> usize {
-    weighted_overlap(query_terms, &passage.heading, 5)
-        + weighted_overlap(query_terms, &passage.tags.join(" "), 4)
-        + weighted_overlap(
-            query_terms,
-            &format!("{} {}", passage.bundle_name, passage.source),
-            3,
-        )
-        + weighted_overlap(query_terms, &passage.content, 1)
+fn inverse_document_frequencies(
+    query_terms: &HashSet<String>,
+    passages: &[&Passage],
+) -> HashMap<String, usize> {
+    query_terms
+        .iter()
+        .map(|term| {
+            let document_frequency = passages
+                .iter()
+                .filter(|passage| passage_score_terms(passage).contains(term))
+                .count();
+            (
+                term.clone(),
+                smoothed_inverse_document_frequency(passages.len(), document_frequency),
+            )
+        })
+        .collect()
 }
 
-fn weighted_overlap(query_terms: &HashSet<String>, value: &str, weight: usize) -> usize {
-    query_terms.intersection(&tokenize(value)).count() * weight
+fn smoothed_inverse_document_frequency(document_count: usize, document_frequency: usize) -> usize {
+    let ratio = document_count
+        .saturating_add(1)
+        .saturating_mul(IDF_RATIO_SCALE)
+        / document_frequency.saturating_add(1);
+    let integer_log = ratio.ilog2().saturating_sub(IDF_RATIO_SCALE.ilog2()) as usize;
+    let integer_base = IDF_RATIO_SCALE << integer_log;
+    let fractional_log =
+        ratio.saturating_sub(integer_base).saturating_mul(IDF_SCALE) / integer_base;
+    IDF_SCALE
+        .saturating_add(integer_log.saturating_mul(IDF_SCALE))
+        .saturating_add(fractional_log)
+}
+
+fn passage_score_terms(passage: &Passage) -> HashSet<String> {
+    tokenize(&format!(
+        "{} {} {} {} {}",
+        passage.bundle_name,
+        passage.source,
+        passage.heading,
+        passage.tags.join(" "),
+        passage.content
+    ))
+}
+
+fn passage_score(
+    query_terms: &HashSet<String>,
+    inverse_document_frequencies: &HashMap<String, usize>,
+    passage: &Passage,
+) -> usize {
+    let heading_terms = tokenize(&passage.heading);
+    let tag_terms = tokenize(&passage.tags.join(" "));
+    let provenance_terms = tokenize(&format!("{} {}", passage.bundle_name, passage.source));
+    let content_terms = tokenize(&passage.content);
+
+    query_terms
+        .iter()
+        .map(|term| {
+            let field_weight = [
+                (content_terms.contains(term), 4usize),
+                (heading_terms.contains(term), 3usize),
+                (tag_terms.contains(term), 2usize),
+                (provenance_terms.contains(term), 1usize),
+            ]
+            .into_iter()
+            .filter_map(|(matches, weight)| matches.then_some(weight))
+            .max()
+            .unwrap_or_default();
+            field_weight.saturating_mul(
+                inverse_document_frequencies
+                    .get(term)
+                    .copied()
+                    .unwrap_or(IDF_SCALE),
+            )
+        })
+        .sum()
 }
 
 fn tokenize(value: &str) -> HashSet<String> {
@@ -730,6 +888,86 @@ fn fixture_scale_is_explicit_and_parser_consistent() {
 
     assert_eq!(count_regular_files(&root).unwrap(), 17);
     assert_eq!(indexed_words, 369);
+}
+
+#[test]
+fn idf_weight_is_deterministic_and_downweights_common_passage_terms() {
+    assert_eq!(smoothed_inverse_document_frequency(10, 10), IDF_SCALE);
+    assert_eq!(smoothed_inverse_document_frequency(10, 1), 337);
+    assert!(
+        smoothed_inverse_document_frequency(10, 1) > smoothed_inverse_document_frequency(10, 9)
+    );
+}
+
+#[test]
+fn idf_document_frequency_uses_only_current_snapshot_candidates() {
+    let context = load_context(&fixture_root(), "meeting-assistant.context.json").unwrap();
+    let query_terms = tokenize("legacy travel delegation");
+    let current = context
+        .passages
+        .iter()
+        .filter(|passage| {
+            passage
+                .valid_until
+                .map_or(true, |until| until >= fixed_now())
+        })
+        .collect::<Vec<_>>();
+    let all = context.passages.iter().collect::<Vec<_>>();
+
+    let current_idf = inverse_document_frequencies(&query_terms, &current);
+    let all_idf = inverse_document_frequencies(&query_terms, &all);
+
+    assert!(current_idf["legacy"] > all_idf["legacy"]);
+}
+
+#[test]
+fn passage_terms_are_saturated_at_the_strongest_matching_field() {
+    let context = load_context(&fixture_root(), "meeting-assistant.context.json").unwrap();
+    let passage = context
+        .passages
+        .iter()
+        .find(|passage| passage.passage_id == PERSON_BACKGROUND)
+        .unwrap();
+    let query_terms = tokenize("leadership");
+    let idf = HashMap::from([("leadership".to_string(), IDF_SCALE)]);
+
+    assert_eq!(passage_score(&query_terms, &idf, passage), 4 * IDF_SCALE);
+}
+
+#[test]
+fn bundle_diverse_shortlist_prevents_one_bundle_from_taking_every_slot() {
+    let context = load_context(&fixture_root(), "meeting-assistant.context.json").unwrap();
+    let passage = |passage_id: &str| {
+        context
+            .passages
+            .iter()
+            .find(|candidate| candidate.passage_id == passage_id)
+            .unwrap()
+    };
+    let ranked = vec![
+        RankedPassage {
+            passage: passage(ATLAS_STATUS),
+            score: 100,
+        },
+        RankedPassage {
+            passage: passage(ATLAS_COMMITMENT),
+            score: 95,
+        },
+        RankedPassage {
+            passage: passage(BEACON_STATUS),
+            score: 90,
+        },
+    ];
+
+    let selected = select_bundle_diverse(
+        ranked,
+        &tokenize("How do the Atlas and Beacon projects affect each other?"),
+        2,
+        50,
+    );
+    assert_eq!(selected.len(), 2);
+    assert_eq!(selected[0].passage.passage_id, ATLAS_STATUS);
+    assert_eq!(selected[1].passage.passage_id, BEACON_STATUS);
 }
 
 #[test]

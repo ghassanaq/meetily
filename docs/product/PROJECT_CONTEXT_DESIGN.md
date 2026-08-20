@@ -159,11 +159,12 @@ Retrieval is local and provider-free:
 
 1. Tokenize the question and candidate fields deterministically.
 2. Exclude expired candidates.
-3. Score candidates using weighted matches across bundle name, headings, tags, and body.
+3. Calculate deterministic inverse document frequency over the current candidate passages in the pinned snapshot, then score candidates using weighted matches across bundle name, headings, tags, and body. Each query term contributes once at its strongest matching field so repeated title text cannot be counted through several fields.
 4. Detect explicit conflicts among current candidates. Relevance to a conflict is established from the semantic terms in its explicit `conflict_key`, not from a single generic body-word overlap.
 5. If a relevant conflict key has more than one current source, fail before any provider request.
-6. Sort deterministically, discard weak filler below the configured relative-score floor, and apply the configured maximum result limit. A limit is a ceiling, not a quota. This describes the spike selector; real-corpus evidence below shows that production selection also needs source diversity.
-7. Send only selected passages to the provider.
+6. Determine eligible bundles from the pinned snapshot and query. An explicitly named project routes deterministically to that project bundle; session-selected bundle eligibility must be preserved separately from lexical passage scores.
+7. Sort deterministically within each eligible bundle, discard weak filler below the configured within-bundle relative-score floor, and build the final budget in bundle-diverse rounds. A limit is a ceiling, not a quota.
+8. Send only selected passages to the provider.
 
 Project-name matches receive enough weight to prevent topic bleed when several project bundles are active. They do not replace semantic relevance: a cross-project question may legitimately retrieve passages from several named projects.
 
@@ -177,7 +178,9 @@ The 39,695-word private-corpus evaluation invalidated a single global floor as t
 - For a split role-and-professional-evidence question, all top-three positions were occupied by adjacent role-document chunks at every measured floor, excluding the required professional-evidence passage.
 - For partial Q&A coverage plus an exact role fact, the same three role-document chunks occupied the top three at every measured floor, excluding the required Q&A passage.
 
-Neither 50% nor 85% is therefore a supported production value. The next selector experiment must prevent one source from monopolizing the result budget while preserving genuinely split evidence. The leading design is a source- or bundle-diverse shortlist—for example, retain the strongest candidate from each relevant bundle before applying within-bundle floors and a final global budget—but that policy remains uncommitted until it passes the private regression suite.
+Neither 50% nor 85% is therefore a supported production value. The follow-up experiment confirmed that deterministic IDF can improve raw source diversity but cannot guarantee cross-bundle coverage. Bundle-diverse rounds now provide that architectural guarantee among bundles judged eligible, while the unchanged private witness shows that lexical eligibility still admits unrelated bundles at real-corpus scale. Production integration therefore requires an explicit session-selected active application/project set pinned in the snapshot; passage scoring may refine retrieval inside that set but must not silently broaden it.
+
+Interview preparation and Q&A sources remain inside the selected project/application bundle. They are not a fourth scope: the stable scope model remains Person, Role, and Project.
 
 ## 9. Provenance and session snapshots
 
