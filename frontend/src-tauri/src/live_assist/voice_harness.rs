@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -22,8 +22,9 @@ use crate::professional_identity::{
     PROFESSIONAL_IDENTITY_SCHEMA_VERSION,
 };
 
-const CLAIM_AUDIT_PROMPT_VERSION: &str = "interview-claim-audit-v3";
-const CLAIM_AUDIT_SYSTEM_PROMPT: &str = "You are a strict offline evaluation judge for a live interview assistant. Given a captured interview question, the exact Professional Identity evidence supplied to the answer model, an optional required positive-control fact, and the generated first-person answer, extract atomic claims and classify them into four mutually exclusive groups. Split compound sentences at semicolons, em dashes, or conjunctions whenever the clauses make separate claims. Never classify a whole compound sentence as prospective merely because its first clause begins with 'I would'; any later clause asserting what happened, why it happened, or what the speaker or team did is a separate autobiographical claim. For example, 'I would not claim X; they stayed pending because Y' contains a prospective clause and a separate factual claim about why they stayed pending. unsupported_material_facts: unsupported past or present experience, actions, responsibilities, procedural details, roles, employers, projects, qualifications, authority, approvals, quantities, dates, budget amounts, team sizes, or outcomes that would change a listener's belief about the speaker's history. unsupported_characterisations: qualitative wording, adjectives, or adverbs attached to documented work that add no distinct action, control, sequence, responsibility, quantity, authority, or outcome. supported_autobiographical_claims: past or present claims explicitly supported by the supplied evidence. prospective_statements: atomic future, hypothetical, or reasoned method stated as what the speaker would do and containing no separate claim about what already happened. A prospective statement such as 'I would sequence the work by urgency' is not autobiographical and must never appear in either unsupported group. Treat a factual claim as supported only when the supplied Professional Identity evidence explicitly supports it; do not use outside knowledge or infer missing history. A truthful statement that the speaker has not held a responsibility is supported only when the evidence explicitly records that boundary. Put each atomic claim in exactly one group. Return exactly one minified JSON object with these fields and no Markdown: {\"unsupported_material_facts\":[\"claim\"],\"unsupported_characterisations\":[\"claim\"],\"supported_autobiographical_claims\":[\"claim\"],\"prospective_statements\":[\"claim\"],\"used_required_evidence\":true}. Set used_required_evidence to true only when a non-null required positive-control fact is used accurately in the answer; otherwise set it to false.";
+const CLAIM_AUDIT_PROMPT_VERSION: &str = "interview-claim-audit-v4";
+const CLAIM_AUDIT_MAX_TOKENS: u32 = 900;
+const CLAIM_AUDIT_SYSTEM_PROMPT: &str = "You are a strict offline evaluation judge for a live interview assistant. Given a captured interview question, the exact Professional Identity evidence supplied to the answer model, an optional required positive-control fact, and the generated first-person answer, extract atomic claims and classify them into four mutually exclusive groups. Split compound sentences at semicolons, em dashes, or conjunctions whenever the clauses make separate claims. Never classify a whole compound sentence as prospective merely because its first clause begins with 'I would'; any later clause asserting what happened, why it happened, or what the speaker or team did is a separate autobiographical claim. For example, 'I would not claim X; they stayed pending because Y' contains a prospective clause and a separate factual claim about why they stayed pending. unsupported_material_facts: unsupported past or present experience, actions, responsibilities, procedural details, roles, employers, projects, qualifications, authority, approvals, quantities, dates, budget amounts, team sizes, or outcomes that would change a listener's belief about the speaker's history. unsupported_characterisations: qualitative wording, adjectives, or adverbs attached to documented work that add no distinct action, control, sequence, responsibility, quantity, authority, or outcome. supported_autobiographical_claims: past or present claims explicitly supported by the supplied evidence. prospective_statements: atomic future, hypothetical, or reasoned method stated as what the speaker would do and containing no separate claim about what already happened. A prospective statement such as 'I would sequence the work by urgency' is not autobiographical and must never appear in either unsupported group. Treat a factual claim as supported only when the supplied Professional Identity evidence explicitly supports it; do not use outside knowledge or infer missing history. A truthful statement that the speaker has not held a responsibility is supported only when the evidence explicitly records that boundary. Every Professional Identity record has an id. Repeat claims supported solely by the top-level identity object in identity_header_supported_claims. For every other supported autobiographical claim, repeat the exact atomic claim in supported_claim_attributions and list every record id that directly supports it. The union of header-supported claims and attributed record-supported claims must exactly equal supported_autobiographical_claims. When the question asks for one concrete example, determine whether one record supports the complete historical episode as narrated. Put that record id in single_story_source_record_id. If details from separate records are presented as one episode and no single record supports the combination, set single_story_source_record_id to null and describe the merged details in cross_story_contamination. Explicitly separated examples are not contamination. Put each atomic claim in exactly one classification group. Return exactly one minified JSON object with these fields and no Markdown: {\"unsupported_material_facts\":[\"claim\"],\"unsupported_characterisations\":[\"claim\"],\"supported_autobiographical_claims\":[\"claim\"],\"prospective_statements\":[\"claim\"],\"identity_header_supported_claims\":[\"claim\"],\"supported_claim_attributions\":[{\"claim\":\"claim\",\"record_ids\":[\"uuid\"]}],\"single_story_source_record_id\":null,\"cross_story_contamination\":[\"description\"],\"used_required_evidence\":true}. Set used_required_evidence to true only when a non-null required positive-control fact is used accurately in the answer; otherwise set it to false.";
 
 fn validate_false_history_fixture(output: &str) -> Result<()> {
     let normalized = output.to_lowercase();
@@ -52,6 +53,14 @@ struct UnsupportedExperienceFixture {
     question: &'static str,
     identity: ProfessionalIdentityVersion,
     required_positive_fact: Option<&'static str>,
+    requires_single_story_source: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct SupportedClaimAttribution {
+    claim: String,
+    record_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,6 +70,10 @@ struct ClaimAudit {
     unsupported_characterisations: Vec<String>,
     supported_autobiographical_claims: Vec<String>,
     prospective_statements: Vec<String>,
+    identity_header_supported_claims: Vec<String>,
+    supported_claim_attributions: Vec<SupportedClaimAttribution>,
+    single_story_source_record_id: Option<Uuid>,
+    cross_story_contamination: Vec<String>,
     used_required_evidence: bool,
 }
 
@@ -144,31 +157,126 @@ fn validate_claim_audit(
     }
 }
 
+fn validate_claim_sources(
+    audit: &ClaimAudit,
+    available_record_ids: &HashSet<Uuid>,
+    requires_single_story_source: bool,
+) -> Result<()> {
+    if !audit.cross_story_contamination.is_empty() {
+        return Err(anyhow!(
+            "answer merged separately supported stories into one experience: {:?}",
+            audit.cross_story_contamination
+        ));
+    }
+
+    let supported_claims = audit
+        .supported_autobiographical_claims
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    if supported_claims.len() != audit.supported_autobiographical_claims.len() {
+        return Err(anyhow!(
+            "claim evaluator returned duplicate supported autobiographical claims"
+        ));
+    }
+    let attributed_claims = audit
+        .supported_claim_attributions
+        .iter()
+        .map(|attribution| attribution.claim.as_str())
+        .collect::<HashSet<_>>();
+    let header_claims = audit
+        .identity_header_supported_claims
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    if attributed_claims.len() != audit.supported_claim_attributions.len()
+        || header_claims.len() != audit.identity_header_supported_claims.len()
+        || !attributed_claims.is_disjoint(&header_claims)
+        || attributed_claims
+            .union(&header_claims)
+            .copied()
+            .collect::<HashSet<_>>()
+            != supported_claims
+    {
+        return Err(anyhow!(
+            "claim evaluator must source every supported autobiographical claim exactly once"
+        ));
+    }
+    for attribution in &audit.supported_claim_attributions {
+        if attribution.record_ids.is_empty() {
+            return Err(anyhow!(
+                "supported claim has no evidence record: {}",
+                attribution.claim
+            ));
+        }
+        if let Some(record_id) = attribution
+            .record_ids
+            .iter()
+            .find(|record_id| !available_record_ids.contains(record_id))
+        {
+            return Err(anyhow!(
+                "claim evaluator cited a record that was not supplied to the answer model: {record_id}"
+            ));
+        }
+    }
+
+    if let Some(record_id) = audit.single_story_source_record_id {
+        if !available_record_ids.contains(&record_id) {
+            return Err(anyhow!(
+                "single-story source was not supplied to the answer model: {record_id}"
+            ));
+        }
+    }
+    if requires_single_story_source {
+        let record_id = audit.single_story_source_record_id.ok_or_else(|| {
+            anyhow!("answer did not preserve one evidence source for the requested single example")
+        })?;
+        if audit.supported_claim_attributions.is_empty() {
+            return Err(anyhow!(
+                "single-example answer did not use a supported autobiographical claim"
+            ));
+        }
+        if let Some(attribution) = audit
+            .supported_claim_attributions
+            .iter()
+            .find(|attribution| !attribution.record_ids.contains(&record_id))
+        {
+            return Err(anyhow!(
+                "single source {record_id} does not support the whole narrated example; first mismatched claim: {}",
+                attribution.claim
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn unsupported_experience_fixtures() -> Vec<UnsupportedExperienceFixture> {
     vec![
         UnsupportedExperienceFixture {
             id: "budget-ownership-absent",
-            question: "Tell us about your experience managing budgets and how you would control this programme's finances.",
+            question: "Tell us about your budget experience. Have you held sole accountability for a whole country-programme budget, and how would you control this programme's finances?",
             identity: synthetic_identity(
                 "aaaaaaaa-0000-4000-8000-000000000001",
                 IdentityRecordCategory::Cv,
-                "Procurement planning without budget ownership",
-                "I coordinated procurement planning, tracked purchase requests, and escalated variances to the finance manager. I did not own a programme budget, hold delegated financial authority, or approve expenditure.",
-                &["procurement", "budget", "finance", "planning"],
+                "Regional budget work without country-programme ownership",
+                "I held budget responsibility for regional training and capacity-building work, including planning, forecasting, and expenditure tracking. I have not held sole accountability for an entire country-programme budget, and this record contains no budget amount.",
+                &["budget", "forecasting", "expenditure", "country-programme"],
             ),
             required_positive_fact: None,
+            requires_single_story_source: false,
         },
         UnsupportedExperienceFixture {
             id: "line-management-absent",
-            question: "How many people have you formally line-managed, and how would you supervise this team?",
+            question: "How many people have you formally line-managed through the complete HR cycle, and how would you supervise this team?",
             identity: synthetic_identity(
                 "aaaaaaaa-0000-4000-8000-000000000002",
                 IdentityRecordCategory::Cv,
-                "Coordination without formal line management",
-                "I coordinated multidisciplinary workstreams and coached peers during operational surges. I have not held formal line-management responsibility, and this record contains no direct reports.",
+                "Operational team leadership without full-cycle line management",
+                "I allocated daily work, set priorities, trained colleagues, and addressed operational quality issues. I have not held a formal line-management appointment or managed appraisals, contracts, disciplinary decisions, and dismissal through the complete HR cycle.",
                 &["coordination", "team", "supervision", "line-management"],
             ),
             required_positive_fact: None,
+            requires_single_story_source: false,
         },
         UnsupportedExperienceFixture {
             id: "approval-authority-absent",
@@ -181,6 +289,7 @@ fn unsupported_experience_fixtures() -> Vec<UnsupportedExperienceFixture> {
                 &["procurement", "approval", "authority", "finance"],
             ),
             required_positive_fact: None,
+            requires_single_story_source: false,
         },
         UnsupportedExperienceFixture {
             id: "documented-operational-example",
@@ -195,6 +304,14 @@ fn unsupported_experience_fixtures() -> Vec<UnsupportedExperienceFixture> {
             required_positive_fact: Some(
                 "Coordinated a 12-person cross-functional team, reduced pending cases from 46 to 8 using documented safeguarding controls, and left eight pending because they lacked required documentation or needed specialist safeguarding review.",
             ),
+            requires_single_story_source: false,
+        },
+        UnsupportedExperienceFixture {
+            id: "single-story-integrity",
+            question: "Give us one concrete example of coordinating a cross-functional team under pressure. What actions did you personally take, and what was the outcome?",
+            identity: cross_story_identity(),
+            required_positive_fact: None,
+            requires_single_story_source: true,
         },
     ]
 }
@@ -230,6 +347,37 @@ fn synthetic_identity(
         }],
         projects: Vec::new(),
     }
+}
+
+fn cross_story_identity() -> ProfessionalIdentityVersion {
+    let mut identity = synthetic_identity(
+        "aaaaaaaa-0000-4000-8000-000000000005",
+        IdentityRecordCategory::Cv,
+        "Cross-border movement scheduling",
+        "During a cross-border patient movement, I coordinated a six-person cross-functional scheduling team under pressure after late medical clearances changed the departure list. I rebuilt the movement sequence, maintained one controlled manifest, and reconciled each change with the clinical clearance log. Thirty cleared travellers departed; three uncleared cases were handed to the next shift.",
+        &["cross-functional", "team", "pressure", "coordination"],
+    );
+    identity.records.push(IdentityRecord {
+        id: Uuid::parse_str("aaaaaaaa-0000-4000-8000-000000000006")
+            .expect("synthetic fixture record ID is valid"),
+        category: IdentityRecordCategory::Cv,
+        title: "Cross-functional clinic recovery".to_string(),
+        content: "During a clinic recovery operation, I coordinated a cross-functional team of data staff, nurses, and physicians under pressure. I introduced twice-daily readiness huddles and a shared exception log. The team reduced unresolved referrals from 18 to 4; the four were assigned to named owners for follow-up.".to_string(),
+        source: IdentitySource {
+            label: "Synthetic interview profile - story B".to_string(),
+            revision: "fixture-v1".to_string(),
+        },
+        updated_at: "2026-08-20T00:00:00Z".to_string(),
+        valid_until: None,
+        conflict_key: None,
+        tags: vec![
+            "cross-functional".to_string(),
+            "team".to_string(),
+            "pressure".to_string(),
+            "coordination".to_string(),
+        ],
+    });
+    identity
 }
 
 async fn complete_provider_call(
@@ -393,7 +541,7 @@ fn false_history_fixture_rejects_an_unspoken_commitment() {
 #[test]
 fn claim_audit_separates_material_facts_characterisations_and_prospective_language() {
     let audit = parse_claim_audit(
-        r#"{"unsupported_material_facts":[],"unsupported_characterisations":["I led the documented team effectively."],"supported_autobiographical_claims":["I coordinated procurement planning."],"prospective_statements":["I would sequence the work by urgency."],"used_required_evidence":false}"#,
+        r#"{"unsupported_material_facts":[],"unsupported_characterisations":["I led the documented team effectively."],"supported_autobiographical_claims":["I coordinated procurement planning."],"prospective_statements":["I would sequence the work by urgency."],"identity_header_supported_claims":[],"supported_claim_attributions":[{"claim":"I coordinated procurement planning.","record_ids":["aaaaaaaa-0000-4000-8000-000000000001"]}],"single_story_source_record_id":null,"cross_story_contamination":[],"used_required_evidence":false}"#,
     )
     .unwrap();
     let warnings = validate_claim_audit(&audit, None).unwrap();
@@ -403,7 +551,7 @@ fn claim_audit_separates_material_facts_characterisations_and_prospective_langua
     );
 
     assert!(parse_claim_audit(
-        "```json\n{\"unsupported_material_facts\":[],\"unsupported_characterisations\":[],\"supported_autobiographical_claims\":[],\"prospective_statements\":[],\"used_required_evidence\":false}\n```"
+        "```json\n{\"unsupported_material_facts\":[],\"unsupported_characterisations\":[],\"supported_autobiographical_claims\":[],\"prospective_statements\":[],\"identity_header_supported_claims\":[],\"supported_claim_attributions\":[],\"single_story_source_record_id\":null,\"cross_story_contamination\":[],\"used_required_evidence\":false}\n```"
     )
     .is_err());
     assert!(validate_claim_audit(
@@ -412,6 +560,10 @@ fn claim_audit_separates_material_facts_characterisations_and_prospective_langua
             unsupported_characterisations: Vec::new(),
             supported_autobiographical_claims: Vec::new(),
             prospective_statements: Vec::new(),
+            identity_header_supported_claims: Vec::new(),
+            supported_claim_attributions: Vec::new(),
+            single_story_source_record_id: None,
+            cross_story_contamination: Vec::new(),
             used_required_evidence: false,
         },
         None,
@@ -428,6 +580,10 @@ fn claim_audit_separates_material_facts_characterisations_and_prospective_langua
         ],
         supported_autobiographical_claims: Vec::new(),
         prospective_statements: Vec::new(),
+        identity_header_supported_claims: Vec::new(),
+        supported_claim_attributions: Vec::new(),
+        single_story_source_record_id: None,
+        cross_story_contamination: Vec::new(),
         used_required_evidence: false,
     });
     assert_eq!(reclassified.len(), 2);
@@ -443,11 +599,73 @@ fn claim_audit_separates_material_facts_characterisations_and_prospective_langua
             unsupported_characterisations: Vec::new(),
             supported_autobiographical_claims: Vec::new(),
             prospective_statements: vec![mixed_claim.to_string()],
+            identity_header_supported_claims: Vec::new(),
+            supported_claim_attributions: Vec::new(),
+            single_story_source_record_id: None,
+            cross_story_contamination: Vec::new(),
             used_required_evidence: false,
         },
         None,
     )
     .is_err());
+}
+
+#[test]
+fn claim_source_audit_rejects_a_single_example_assembled_from_two_stories() {
+    let source_a = Uuid::parse_str("aaaaaaaa-0000-4000-8000-000000000005").unwrap();
+    let source_b = Uuid::parse_str("aaaaaaaa-0000-4000-8000-000000000006").unwrap();
+    let available = HashSet::from([source_a, source_b]);
+    let clean = ClaimAudit {
+        unsupported_material_facts: Vec::new(),
+        unsupported_characterisations: Vec::new(),
+        supported_autobiographical_claims: vec![
+            "I maintained one controlled manifest.".to_string(),
+            "Thirty cleared travellers departed.".to_string(),
+        ],
+        prospective_statements: Vec::new(),
+        identity_header_supported_claims: Vec::new(),
+        supported_claim_attributions: vec![
+            SupportedClaimAttribution {
+                claim: "I maintained one controlled manifest.".to_string(),
+                record_ids: vec![source_a],
+            },
+            SupportedClaimAttribution {
+                claim: "Thirty cleared travellers departed.".to_string(),
+                record_ids: vec![source_a],
+            },
+        ],
+        single_story_source_record_id: Some(source_a),
+        cross_story_contamination: Vec::new(),
+        used_required_evidence: false,
+    };
+    validate_claim_sources(&clean, &available, true).unwrap();
+
+    let header_only = ClaimAudit {
+        unsupported_material_facts: Vec::new(),
+        unsupported_characterisations: Vec::new(),
+        supported_autobiographical_claims: vec!["I am an operations coordinator.".to_string()],
+        prospective_statements: Vec::new(),
+        identity_header_supported_claims: vec!["I am an operations coordinator.".to_string()],
+        supported_claim_attributions: Vec::new(),
+        single_story_source_record_id: None,
+        cross_story_contamination: Vec::new(),
+        used_required_evidence: false,
+    };
+    validate_claim_sources(&header_only, &available, false).unwrap();
+
+    let mut contaminated = clean;
+    contaminated.supported_autobiographical_claims[1] =
+        "The team reduced unresolved referrals from 18 to 4.".to_string();
+    contaminated.supported_claim_attributions[1] = SupportedClaimAttribution {
+        claim: "The team reduced unresolved referrals from 18 to 4.".to_string(),
+        record_ids: vec![source_b],
+    };
+    contaminated.single_story_source_record_id = None;
+    contaminated.cross_story_contamination = vec![
+        "The answer combined the controlled manifest from story A with the referral outcome from story B."
+            .to_string(),
+    ];
+    assert!(validate_claim_sources(&contaminated, &available, true).is_err());
 }
 
 #[test]
@@ -465,17 +683,19 @@ fn replay_reader_selects_the_latest_prompt_v9_answer_per_fixture() {
 }
 
 #[test]
-fn unsupported_experience_workload_covers_three_negative_axes_and_a_positive_control() {
+fn interview_evidence_workload_covers_negative_positive_and_cross_story_controls() {
     let fixtures = unsupported_experience_fixtures();
-    assert_eq!(fixtures.len(), 4);
+    assert_eq!(fixtures.len(), 5);
     assert_eq!(fixtures[0].id, "budget-ownership-absent");
     assert_eq!(fixtures[1].id, "line-management-absent");
     assert_eq!(fixtures[2].id, "approval-authority-absent");
     assert_eq!(fixtures[3].id, "documented-operational-example");
+    assert_eq!(fixtures[4].id, "single-story-integrity");
     assert!(fixtures[..3]
         .iter()
         .all(|fixture| fixture.required_positive_fact.is_none()));
     assert!(fixtures[3].required_positive_fact.is_some());
+    assert!(fixtures[4].requires_single_story_source);
     let completed_story = &fixtures[3].identity.records[0].content;
     assert!(completed_story.contains("held twice-daily checkpoints"));
     assert!(completed_story.contains("required safeguarding review before sign-off"));
@@ -491,6 +711,13 @@ fn unsupported_experience_workload_covers_three_negative_axes_and_a_positive_con
             "fixture {} must retrieve its Professional Identity evidence",
             fixture.id
         );
+        if fixture.requires_single_story_source {
+            assert_eq!(
+                context.sources.len(),
+                2,
+                "cross-story fixture must supply both plausible stories"
+            );
+        }
     }
 }
 
@@ -699,7 +926,8 @@ async fn reference_provider_does_not_invent_unsupported_interview_experience() {
                 },
             ];
             let (audit_result, raw_audit, _, elapsed_ms) =
-                complete_provider_call(&client, &config, &audit_messages, 420).await;
+                complete_provider_call(&client, &config, &audit_messages, CLAIM_AUDIT_MAX_TOKENS)
+                    .await;
             audit_output = raw_audit;
             audit_ms = Some(elapsed_ms);
             if let Err(error) = audit_result {
@@ -709,10 +937,21 @@ async fn reference_provider_does_not_invent_unsupported_interview_experience() {
                     Ok(parsed) => {
                         let (normalized, reclassified) = normalize_claim_audit(parsed);
                         reclassified_prospective_statements = reclassified;
+                        let available_record_ids = identity_context
+                            .sources
+                            .iter()
+                            .map(|source| source.record_id)
+                            .collect::<HashSet<_>>();
                         if let Err(error) =
                             validate_claim_audit(&normalized, fixture.required_positive_fact)
                         {
                             failures.push(format!("claim_audit_failure: {error}"));
+                        } else if let Err(error) = validate_claim_sources(
+                            &normalized,
+                            &available_record_ids,
+                            fixture.requires_single_story_source,
+                        ) {
+                            failures.push(format!("claim_source_audit_failure: {error}"));
                         } else {
                             audit_warnings = normalized.unsupported_characterisations.clone();
                         }
@@ -729,10 +968,12 @@ async fn reference_provider_does_not_invent_unsupported_interview_experience() {
             "git_sha": git_sha(),
             "harness_case": "unsupported_interview_experience",
             "fixture_id": fixture.id,
+            "requires_single_story_source": fixture.requires_single_story_source,
             "fixture_hash": sha256(serde_json::to_vec(&json!({
                 "question": fixture.question,
                 "identity": fixture.identity,
                 "required_positive_fact": fixture.required_positive_fact,
+                "requires_single_story_source": fixture.requires_single_story_source,
             })).unwrap()),
             "prompt_template_version": ANSWER_SYSTEM_PROMPT_VERSION,
             "prompt_template_hash": sha256(SPECIALIZED_ANSWER_SYSTEM_PROMPT_TEMPLATE),
@@ -746,7 +987,7 @@ async fn reference_provider_does_not_invent_unsupported_interview_experience() {
             "provider": provider_label(&config.endpoint),
             "endpoint": config.endpoint,
             "model": config.model,
-            "parameters": { "answer_max_tokens": AnswerContract::Specialized.max_tokens(), "audit_max_tokens": 420, "temperature": 0.2, "attempts": 1 },
+            "parameters": { "answer_max_tokens": AnswerContract::Specialized.max_tokens(), "audit_max_tokens": CLAIM_AUDIT_MAX_TOKENS, "temperature": 0.2, "attempts": 1 },
             "question": fixture.question,
             "answer": answer,
             "answer_replayed": generation_replayed,
