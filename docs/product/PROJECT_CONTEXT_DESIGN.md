@@ -169,6 +169,10 @@ Project-name matches receive enough weight to prevent topic bleed when several p
 
 The initial experiment compares result limits of 3, 5, and 8. It does not inherit the identity-record limit of eight without evidence.
 
+The spike's current relative-score floor is **50% of the strongest candidate score**. A candidate remains eligible only when its score is at least `0.5 × best_score`; the maximum result limit is applied afterward. This floor, rather than the limit, determined the selected set in the synthetic experiment. It is therefore an explicit, versioned retrieval-policy parameter, not an incidental implementation detail. Changing it must advance the retrieval policy version and the capability hash that covers retrieval behavior.
+
+The 50% value is provisional. A small corpus with disjoint vocabulary makes the gap between strong and weak candidates artificially wide. Real-corpus evaluation must revisit the floor when Person, Role, and Project bundles reuse terms such as approval, escalation, delivery, stakeholder, and risk. A lower floor may admit noise while a higher floor may exclude necessary evidence.
+
 ## 9. Provenance and session snapshots
 
 Each generated exchange records:
@@ -196,6 +200,8 @@ The fixture corpus contains:
 - one person identity bundle;
 - one role bundle;
 - two project bundles;
+- 17 files in total, including 12 Markdown sources;
+- roughly 381 authored corpus words by the review inventory and 369 passage-body words actually indexed by the parser;
 - current, expired, and explicitly conflicting records;
 - imperative policy language;
 - at least ten representative questions with expected passage IDs.
@@ -218,6 +224,41 @@ Acceptance thresholds are absolute rather than percentage-based:
 | 8 | 3 |
 
 Expected evidence must appear in the top three. Relevant explicit conflicts must block before selection. An unrelated conflict must not block another question. A two-project question must retrieve the expected passages from both projects, while a single-project question must not retrieve passages from the other project merely because both are active.
+
+### 10.1 Private real-corpus regression path
+
+The permanent synthetic fixtures remain in Git. The real CV, TOR, authority, project, and reference corpus stays outside Git in a private user-selected folder. The ignored integration test `private_corpus_retrieval_measurements` reads that folder only when `PROJECT_CONTEXT_PATH` is set explicitly.
+
+The private context root contains the normal context manifest and a private `retrieval-eval.json` file:
+
+```json
+{
+  "schema_version": 1,
+  "context_manifest": "meeting-assistant.context.json",
+  "evaluated_at": "2026-08-20T00:00:00Z",
+  "relative_score_floor_percent": 50,
+  "cases": [
+    {
+      "id": "approval-limit",
+      "question": "What is my current approval limit?",
+      "expected_passage_ids": ["document-uuid::approval-authority"],
+      "relevant_passage_ids": ["document-uuid::approval-authority"],
+      "allowed_project_bundle_ids": []
+    }
+  ]
+}
+```
+
+The complete private file must contain 10–20 cases. Expected passage IDs must also be listed as relevant. `allowed_project_bundle_ids` is empty for Person/Role-only questions and explicitly names every project allowed for project or cross-project questions. This makes unintended bundle bleed measurable rather than inferred after the run.
+
+Run the local suite from PowerShell without copying private material into the repository:
+
+```powershell
+$env:PROJECT_CONTEXT_PATH = 'C:\private\meeting-assistant-context'
+cargo test -p meetily --test project_context_retrieval private_corpus_retrieval_measurements -- --ignored --nocapture
+```
+
+The test reports case IDs, passage IDs, ranks, scores, irrelevant counts, selected word counts, and project bleed. It never prints question text or passage content. CI does not set `PROJECT_CONTEXT_PATH` and the test remains ignored by default.
 
 The spike determines whether the existing lexical approach is sufficient and which result limit produces the best precision. If it fails, the Markdown corpus and fixtures remain valid; only the retrieval mechanism changes.
 

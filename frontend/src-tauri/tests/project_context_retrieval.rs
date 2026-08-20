@@ -11,6 +11,9 @@ use uuid::Uuid;
 const CONTEXT_SCHEMA_VERSION: u32 = 1;
 const DOCUMENT_SCHEMA_VERSION: u32 = 1;
 const MAX_PASSAGE_WORDS: usize = 180;
+const CURRENT_RELATIVE_SCORE_FLOOR_PERCENT: usize = 50;
+const PRIVATE_CONTEXT_PATH_ENV: &str = "PROJECT_CONTEXT_PATH";
+const PRIVATE_EVALUATION_FILE: &str = "retrieval-eval.json";
 const HASH_DOMAIN: &[u8] = b"meeting-assistant-project-passage-v1\0";
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +47,26 @@ struct DocumentMetadata {
     valid_until: Option<String>,
     conflict_key: Option<String>,
     tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateEvaluationSuite {
+    schema_version: u32,
+    context_manifest: String,
+    evaluated_at: String,
+    relative_score_floor_percent: usize,
+    cases: Vec<PrivateRetrievalCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateRetrievalCase {
+    id: String,
+    question: String,
+    expected_passage_ids: Vec<String>,
+    relevant_passage_ids: Vec<String>,
+    allowed_project_bundle_ids: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -467,6 +490,25 @@ fn retrieve<'a>(
     now: DateTime<Utc>,
     limit: usize,
 ) -> Result<Vec<RankedPassage<'a>>> {
+    retrieve_with_floor(
+        passages,
+        question,
+        now,
+        limit,
+        CURRENT_RELATIVE_SCORE_FLOOR_PERCENT,
+    )
+}
+
+fn retrieve_with_floor<'a>(
+    passages: &'a [Passage],
+    question: &str,
+    now: DateTime<Utc>,
+    limit: usize,
+    relative_score_floor_percent: usize,
+) -> Result<Vec<RankedPassage<'a>>> {
+    if relative_score_floor_percent > 100 {
+        bail!("relative score floor must be between 0 and 100 percent");
+    }
     let query_terms = tokenize(question);
     let current = passages
         .iter()
@@ -510,7 +552,10 @@ fn retrieve<'a>(
             .then_with(|| left.passage.passage_id.cmp(&right.passage.passage_id))
     });
     if let Some(best_score) = ranked.first().map(|item| item.score) {
-        ranked.retain(|item| item.score.saturating_mul(2) >= best_score);
+        ranked.retain(|item| {
+            item.score.saturating_mul(100)
+                >= best_score.saturating_mul(relative_score_floor_percent)
+        });
     }
     ranked.truncate(limit);
     Ok(ranked)
@@ -648,6 +693,253 @@ fn fixed_now() -> DateTime<Utc> {
     parse_timestamp("now", "2026-08-20T00:00:00Z").unwrap()
 }
 
+fn max_irrelevant_for_limit(limit: usize) -> usize {
+    match limit {
+        3 => 1,
+        5 => 2,
+        8 => 3,
+        _ => unreachable!(),
+    }
+}
+
+fn count_regular_files(root: &Path) -> Result<usize> {
+    let mut count = 0usize;
+    for entry in fs::read_dir(root)
+        .with_context(|| format!("failed to read fixture directory '{}'", root.display()))?
+    {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            count += count_regular_files(&entry.path())?;
+        } else if file_type.is_file() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[test]
+fn fixture_scale_is_explicit_and_parser_consistent() {
+    let root = fixture_root();
+    let context = load_context(&root, "meeting-assistant.context.json").unwrap();
+    let indexed_words = context
+        .passages
+        .iter()
+        .map(|passage| passage.content.split_whitespace().count())
+        .sum::<usize>();
+
+    assert_eq!(count_regular_files(&root).unwrap(), 17);
+    assert_eq!(indexed_words, 369);
+}
+
+#[test]
+#[ignore = "requires PROJECT_CONTEXT_PATH pointing to a private corpus root"]
+fn private_corpus_retrieval_measurements() {
+    run_private_corpus_retrieval_measurements().unwrap();
+}
+
+#[test]
+fn private_corpus_measurement_rules_are_ci_covered_on_synthetic_data() {
+    let context = load_context(&fixture_root(), "meeting-assistant.context.json").unwrap();
+    let private_cases = cases()
+        .into_iter()
+        .map(|case| {
+            let allowed_project_bundle_ids = match case.exclusive_project {
+                Some(project) => vec![project.to_string()],
+                None if case.name == "cross-project dependencies" => {
+                    vec!["atlas".to_string(), "beacon".to_string()]
+                }
+                None => Vec::new(),
+            };
+            PrivateRetrievalCase {
+                id: case.name.replace(' ', "-"),
+                question: case.question.to_string(),
+                expected_passage_ids: case
+                    .expected
+                    .iter()
+                    .map(|passage_id| (*passage_id).to_string())
+                    .collect(),
+                relevant_passage_ids: case
+                    .relevant
+                    .iter()
+                    .map(|passage_id| (*passage_id).to_string())
+                    .collect(),
+                allowed_project_bundle_ids,
+            }
+        })
+        .collect();
+    let suite = PrivateEvaluationSuite {
+        schema_version: CONTEXT_SCHEMA_VERSION,
+        context_manifest: "meeting-assistant.context.json".to_string(),
+        evaluated_at: "2026-08-20T00:00:00Z".to_string(),
+        relative_score_floor_percent: CURRENT_RELATIVE_SCORE_FLOOR_PERCENT,
+        cases: private_cases,
+    };
+
+    evaluate_private_suite(&context, &suite).unwrap();
+}
+
+fn run_private_corpus_retrieval_measurements() -> Result<()> {
+    let root = std::env::var_os(PRIVATE_CONTEXT_PATH_ENV)
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("{PRIVATE_CONTEXT_PATH_ENV} is not set"))?
+        .canonicalize()
+        .context("PROJECT_CONTEXT_PATH does not identify an existing context root")?;
+    let suite_path = resolve_existing_relative_path(&root, PRIVATE_EVALUATION_FILE)?;
+    let suite: PrivateEvaluationSuite = parse_json_file(&suite_path)?;
+    let context = load_context(&root, &suite.context_manifest)?;
+    evaluate_private_suite(&context, &suite)
+}
+
+fn evaluate_private_suite(context: &LoadedContext, suite: &PrivateEvaluationSuite) -> Result<()> {
+    if suite.schema_version != CONTEXT_SCHEMA_VERSION {
+        bail!(
+            "unsupported private evaluation schema version {}",
+            suite.schema_version
+        );
+    }
+    if !(10..=20).contains(&suite.cases.len()) {
+        bail!("private evaluation suite must contain between 10 and 20 cases");
+    }
+    if suite.relative_score_floor_percent > 100 {
+        bail!("relative_score_floor_percent must be between 0 and 100");
+    }
+
+    let evaluated_at = parse_timestamp("evaluated_at", &suite.evaluated_at)?;
+    let mut case_ids = HashSet::new();
+
+    for case in &suite.cases {
+        validate_nonempty("private evaluation case id", &case.id)?;
+        validate_nonempty("private evaluation question", &case.question)?;
+        if !case_ids.insert(case.id.as_str()) {
+            bail!("duplicate private evaluation case id '{}'", case.id);
+        }
+        if case.expected_passage_ids.is_empty() || case.relevant_passage_ids.is_empty() {
+            bail!(
+                "private evaluation case '{}' must declare expected and relevant passage IDs",
+                case.id
+            );
+        }
+
+        let expected = case
+            .expected_passage_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let relevant = case
+            .relevant_passage_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let allowed_projects = case
+            .allowed_project_bundle_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        for project_id in &case.allowed_project_bundle_ids {
+            validate_nonempty("allowed project bundle id", project_id)?;
+        }
+        if expected.len() != case.expected_passage_ids.len()
+            || relevant.len() != case.relevant_passage_ids.len()
+            || allowed_projects.len() != case.allowed_project_bundle_ids.len()
+        {
+            bail!(
+                "private evaluation case '{}' contains duplicate IDs",
+                case.id
+            );
+        }
+        if !expected.is_subset(&relevant) {
+            bail!(
+                "private evaluation case '{}' expected IDs must also be relevant IDs",
+                case.id
+            );
+        }
+
+        for limit in [3usize, 5, 8] {
+            let results = retrieve_with_floor(
+                &context.passages,
+                &case.question,
+                evaluated_at,
+                limit,
+                suite.relative_score_floor_percent,
+            )?;
+            let selected_ids = results
+                .iter()
+                .map(|item| item.passage.passage_id.as_str())
+                .collect::<Vec<_>>();
+            let expected_ranks = case
+                .expected_passage_ids
+                .iter()
+                .map(|passage_id| {
+                    selected_ids
+                        .iter()
+                        .position(|selected| *selected == passage_id.as_str())
+                        .map(|index| index + 1)
+                        .unwrap_or(usize::MAX)
+                })
+                .collect::<Vec<_>>();
+            if expected_ranks.iter().any(|rank| *rank > 3) {
+                bail!(
+                    "private evaluation case '{}' at limit {} placed expected evidence outside the top three; ranks={:?}, selected={:?}",
+                    case.id,
+                    limit,
+                    expected_ranks,
+                    selected_ids
+                );
+            }
+
+            let irrelevant = results
+                .iter()
+                .filter(|item| !relevant.contains(item.passage.passage_id.as_str()))
+                .count();
+            if irrelevant > max_irrelevant_for_limit(limit) {
+                bail!(
+                    "private evaluation case '{}' at limit {} returned {} irrelevant passages; selected={:?}",
+                    case.id,
+                    limit,
+                    irrelevant,
+                    selected_ids
+                );
+            }
+
+            let project_bleed = results.iter().any(|item| {
+                item.passage.scope == BundleScope::Project
+                    && !allowed_projects.contains(item.passage.bundle_id.as_str())
+            });
+            if project_bleed {
+                bail!(
+                    "private evaluation case '{}' at limit {} selected a project outside allowed_project_bundle_ids; selected={:?}",
+                    case.id,
+                    limit,
+                    selected_ids
+                );
+            }
+
+            let words = results
+                .iter()
+                .map(|item| item.passage.content.split_whitespace().count())
+                .sum::<usize>();
+            let selected_with_scores = results
+                .iter()
+                .map(|item| format!("{}@{}", item.passage.passage_id, item.score))
+                .collect::<Vec<_>>();
+            println!(
+                "private_eval case={} limit={} floor_percent={} ranks={:?} selected={} irrelevant={} words={} passages={:?}",
+                case.id,
+                limit,
+                suite.relative_score_floor_percent,
+                expected_ranks,
+                results.len(),
+                irrelevant,
+                words,
+                selected_with_scores
+            );
+        }
+    }
+
+    Ok(())
+}
+
 #[test]
 fn ten_question_fixture_meets_rank_precision_and_project_isolation_targets() {
     let context = load_context(&fixture_root(), "meeting-assistant.context.json").unwrap();
@@ -655,12 +947,7 @@ fn ten_question_fixture_meets_rank_precision_and_project_isolation_targets() {
     assert_eq!(context.name, "Head of Mission — Atlas and Beacon");
 
     for limit in [3usize, 5, 8] {
-        let max_irrelevant = match limit {
-            3 => 1,
-            5 => 2,
-            8 => 3,
-            _ => unreachable!(),
-        };
+        let max_irrelevant = max_irrelevant_for_limit(limit);
         for case in cases() {
             let results = retrieve(&context.passages, case.question, fixed_now(), limit).unwrap();
             for expected in case.expected {
