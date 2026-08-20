@@ -2,7 +2,7 @@
 
 Date: 2026-08-20
 
-Status: provider-free representative-corpus result; real user corpus validation remains outstanding
+Status: provider-free representative- and private-corpus evidence; global selector is not production-ready
 
 ## Configuration
 
@@ -16,11 +16,11 @@ Status: provider-free representative-corpus result; real user corpus validation 
 - Weighted lexical scoring over bundle name, source, heading, tags, and passage body.
 - Expiry filtering before scoring.
 - Semantic conflict-key matching and fail-closed conflict blocking.
-- Relative score floor: selected candidates must score at least half of the strongest match.
+- Synthetic-fixture relative score floor: selected candidates must score at least half of the strongest match.
 - Compared maximum result limits of 3, 5, and 8.
 - No provider, credentials, network, or model generation.
 
-## Results
+## Synthetic-fixture results
 
 All ten questions passed at all three maximum result limits.
 
@@ -38,7 +38,21 @@ All ten questions passed at all three maximum result limits.
 | Unrelated current conflict | Did not block or enter results |
 | Imperative role policy | Preserved as typed `role_policy` data |
 
-The limits of 3, 5, and 8 produced identical selected sets. The 50%-of-best relative-score floor prevented the selector from padding a strong answer with weak matches. The floor therefore did the selection work while the maximum limit was nearly inert. The smallest limit, 3, remains the provisional production ceiling for this corpus, but the floor is the load-bearing parameter that must be revisited on real material.
+The limits of 3, 5, and 8 produced identical selected sets. The 50%-of-best relative-score floor prevented the selector from padding a strong answer with weak matches. The floor therefore did the selection work while the maximum limit was nearly inert. The smallest limit, 3, is sufficient for this fixture, but neither the limit nor the floor is a production recommendation.
+
+## Private-corpus results
+
+The private corpus contains 15 indexed Markdown sources and 39,695 passage-body words. The first evaluation used 12 questions whose expected passages all came from the primary Q&A document. All 36 question/limit combinations passed at an 85% floor, but that result was structurally biased: question-shaped Q&A text was the only expected document type, so the suite could not measure cross-source recall.
+
+Three deliberately diversified questions invalidated that conclusion across a 50–85% floor sweep:
+
+| Case | 50–70% | 75–85% |
+| --- | --- | --- |
+| No Q&A coverage; directive answer required | Answer ranked second, but same-document noise exceeded the precision allowance | Title/preamble survived; answer-bearing passage was excluded |
+| Split role duty and professional evidence | All top-three slots went to role-document chunks; professional evidence was absent | Same failure |
+| Partial Q&A coverage plus exact role staffing | All top-three slots went to role-document chunks; Q&A evidence was absent | Same failure |
+
+No global floor in the measured range passed the diversified suite. Global-floor tuning is therefore a closed question for this selector: a threshold can only filter an already-ranked list; it cannot change which source produced the top candidates. The failure sits upstream in scoring, ranking, and source diversity because adjacent chunks from one source can monopolize the global top-three budget. The private ignored test now retains these 15 cases, with the 85% configuration serving as a known failing recall witness rather than a recommendation.
 
 ## Findings produced by the spike
 
@@ -54,10 +68,12 @@ The second run correctly ranked the procurement authority passage first but fill
 
 The corrected selector discards candidates scoring below half of the strongest match before applying the maximum result limit. This removed all irrelevant filler in the representative corpus.
 
-The current 50% floor is provisional retrieval policy, not a validated universal threshold. At this fixture scale, vocabulary is sparse and largely disjoint across bundles, so strong and weak candidates separate easily. A real 20,000–50,000-word corpus is expected to reuse terms such as approval, escalation, delivery, stakeholder, and risk across Person, Role, and Project sources. That narrower score distribution may cause the same floor either to admit noise or exclude necessary evidence.
+The 50% floor is a synthetic-fixture parameter, not a validated universal threshold. Its committed constant is named `SYNTHETIC_FIXTURE_RELATIVE_SCORE_FLOOR_PERCENT` so a future implementation cannot mistake fixture tuning for production evidence.
 
 ## Interpretation
 
-Weighted lexical retrieval is sufficient for this small, deliberately structured representative corpus. With only 369 indexed passage-body words—less than a typical page—the result demonstrates parser, provenance, expiry, conflict, scoring, floor, and selection mechanics. It does not establish that lexical scoring can discriminate across the user's real CV, TOR, guides, authority records, or project files.
+Weighted lexical retrieval is sufficient for the small, deliberately structured representative corpus. With only 369 indexed passage-body words—less than a typical page—that result demonstrates parser, provenance, expiry, conflict, scoring, floor, and selection mechanics.
 
-The next evidence required is the same regression suite populated with user-authored canonical Markdown outside Git. The ignored `private_corpus_retrieval_measurements` test reads `PROJECT_CONTEXT_PATH` and a private `retrieval-eval.json` containing 10–20 real questions, expected/relevant passage IDs, allowed project bundles, evaluation time, and the floor being measured. It emits identifiers and metrics without printing question or passage content. The anonymized fixtures remain the permanent CI mechanics test. If precision or recall then fails, the corpus and provenance contract remain valid; only the retrieval mechanism or floor changes.
+The private regression suite supplied the missing scale and source-diversity evidence. It shows that a single global ranking and floor cannot yet retrieve split evidence reliably from the user's CV, role documents, Q&A material, and professional evidence. The anonymized fixtures remain the permanent CI mechanics test; the sensitive corpus remains outside Git behind `PROJECT_CONTEXT_PATH`.
+
+The next retrieval experiment should build a source- or bundle-diverse shortlist before the final global budget, then rerun all 15 private questions across limits 3, 5, and 8. Live Assist integration remains blocked until a selector passes both the synthetic mechanics tests and the diversified private suite.
