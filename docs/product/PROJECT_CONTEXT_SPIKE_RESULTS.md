@@ -52,7 +52,7 @@ Three deliberately diversified questions invalidated that conclusion across a 50
 | Split role duty and professional evidence | All top-three slots went to role-document chunks; professional evidence was absent | Same failure |
 | Partial Q&A coverage plus exact role staffing | All top-three slots went to role-document chunks; Q&A evidence was absent | Same failure |
 
-No global floor in the measured range passed the diversified suite. The failure is not only threshold calibration: adjacent chunks from one source can monopolize the global top-three budget. The private ignored test now retains these 15 cases, with the 85% configuration serving as a known failing recall witness rather than a recommendation.
+No global floor in the measured range passed the diversified suite. Global-floor tuning is therefore a closed question for this selector: a threshold can only filter an already-ranked list; it cannot change which source produced the top candidates. The failure sits upstream in scoring, ranking, and source diversity because adjacent chunks from one source can monopolize the global top-three budget. The private ignored test now retains these 15 cases, with the 85% configuration serving as a known failing recall witness rather than a recommendation.
 
 ## Findings produced by the spike
 
