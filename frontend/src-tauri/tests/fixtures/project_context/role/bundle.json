@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "bundle_id": "head-of-mission",
+  "name": "Head of Mission",
+  "sources": [
+    "leadership-duties.md",
+    "approval-authority.md",
+    "staff-safety.md",
+    "expired-travel-rule.md",
+    "vehicle-ceiling-a.md",
+    "vehicle-ceiling-b.md"
+  ]
+}

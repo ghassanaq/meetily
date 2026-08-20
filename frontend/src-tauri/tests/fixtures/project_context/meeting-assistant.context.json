@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "context_id": "head-of-mission-multi-project",
+  "name": "Head of Mission — Atlas and Beacon",
+  "identity_bundle": "identity/bundle.json",
+  "role_bundle": "role/bundle.json",
+  "project_bundles": [
+    "projects/atlas/bundle.json",
+    "projects/beacon/bundle.json"
+  ]
+}
