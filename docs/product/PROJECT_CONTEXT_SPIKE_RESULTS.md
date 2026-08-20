@@ -74,6 +74,14 @@ The new selector keeps all ten synthetic cases and the stricter synthetic privat
 
 That failure localizes the remaining problem: bundle diversity now provides coverage among bundles judged eligible, but lexical bundle eligibility is not precise enough on the 39,695-word corpus. The next design decision is not another passage-score floor. Live Assist must pin an explicit active application/project selection and the retrieval policy must distinguish session-selected bundles from merely loaded contextual bundles before lexical eligibility is treated as production-ready.
 
+## Pinned session eligibility
+
+The retrieval contract now has a hard session boundary: `active_project_bundle_ids` is pinned with the snapshot before retrieval. Person and Role remain the single shared bundles; Project/application bundles are an explicit subset and may be empty. Unknown selected IDs fail closed.
+
+Selection happens before document-frequency calculation, conflict detection, lexical bundle eligibility, and ranking. The regression test loads both Atlas and Beacon, pins only Atlas, and proves that physically removing Beacon produces identical passage IDs and scores. It also proves that an empty Project selection cannot return a Project passage. An unselected bundle therefore cannot alter IDF or leak into results.
+
+This closes session-selected eligibility as an architectural boundary, not the lexical precision problem inside an active set. The unchanged private run still activates all Project bundles in its context manifest and remains red on its first precision witness. The next retrieval experiment must improve precision among intentionally active Person, Role, and Project bundles. Only after the private gate passes should preflight expose the active application/project selection and durable meeting sessions persist it; Live Assist answer generation remains blocked.
+
 ## Findings produced by the spike
 
 ### Conflict relevance cannot use any body-word overlap
@@ -96,4 +104,4 @@ Weighted lexical retrieval is sufficient for the small, deliberately structured 
 
 The private regression suite supplied the missing scale and source-diversity evidence. It shows that a single global ranking and floor cannot yet retrieve split evidence reliably from the user's CV, role documents, Q&A material, and professional evidence. The anonymized fixtures remain the permanent CI mechanics test; the sensitive corpus remains outside Git behind `PROJECT_CONTEXT_PATH`.
 
-The IDF and bundle-diversity experiment closes the ranking-architecture question but leaves bundle eligibility open. Live Assist integration remains blocked until session-selected bundle eligibility is specified and a selector passes both the synthetic mechanics tests and the unchanged diversified private suite.
+The IDF and bundle-diversity experiment closes the ranking architecture, and pinned session selection now closes the hard eligibility boundary. Lexical precision inside the active bundle set remains open. Live Assist answer generation remains blocked until a selector passes both the synthetic mechanics tests and the unchanged diversified private suite.

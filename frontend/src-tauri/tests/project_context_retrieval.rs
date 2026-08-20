@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -119,6 +119,29 @@ struct Passage {
 struct RankedPassage<'a> {
     passage: &'a Passage,
     score: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PinnedBundleSelection {
+    project_bundle_ids: BTreeSet<String>,
+}
+
+impl PinnedBundleSelection {
+    fn all_projects(passages: &[Passage]) -> Self {
+        Self {
+            project_bundle_ids: passages
+                .iter()
+                .filter(|passage| passage.scope == BundleScope::Project)
+                .map(|passage| passage.bundle_id.clone())
+                .collect(),
+        }
+    }
+
+    fn projects<const N: usize>(bundle_ids: [&str; N]) -> Self {
+        Self {
+            project_bundle_ids: bundle_ids.into_iter().map(str::to_string).collect(),
+        }
+    }
 }
 
 fn fixture_root() -> PathBuf {
@@ -510,13 +533,37 @@ fn retrieve_with_floor<'a>(
     limit: usize,
     relative_score_floor_percent: usize,
 ) -> Result<Vec<RankedPassage<'a>>> {
+    let selection = PinnedBundleSelection::all_projects(passages);
+    retrieve_with_selection_and_floor(
+        passages,
+        &selection,
+        question,
+        now,
+        limit,
+        relative_score_floor_percent,
+    )
+}
+
+fn retrieve_with_selection_and_floor<'a>(
+    passages: &'a [Passage],
+    selection: &PinnedBundleSelection,
+    question: &str,
+    now: DateTime<Utc>,
+    limit: usize,
+    relative_score_floor_percent: usize,
+) -> Result<Vec<RankedPassage<'a>>> {
     if relative_score_floor_percent > 100 {
         bail!("relative score floor must be between 0 and 100 percent");
     }
+    validate_pinned_bundle_selection(passages, selection)?;
     let query_terms = tokenize(question);
     let current = passages
         .iter()
         .filter(|passage| passage.valid_until.map_or(true, |until| until >= now))
+        .filter(|passage| {
+            passage.scope != BundleScope::Project
+                || selection.project_bundle_ids.contains(&passage.bundle_id)
+        })
         .collect::<Vec<_>>();
     let inverse_document_frequencies = inverse_document_frequencies(&query_terms, &current);
     let conflict_counts = current
@@ -562,6 +609,31 @@ fn retrieve_with_floor<'a>(
         limit,
         relative_score_floor_percent,
     ))
+}
+
+fn validate_pinned_bundle_selection(
+    passages: &[Passage],
+    selection: &PinnedBundleSelection,
+) -> Result<()> {
+    let available_projects = passages
+        .iter()
+        .filter(|passage| passage.scope == BundleScope::Project)
+        .map(|passage| passage.bundle_id.as_str())
+        .collect::<HashSet<_>>();
+    let mut unknown = selection
+        .project_bundle_ids
+        .iter()
+        .filter(|bundle_id| !available_projects.contains(bundle_id.as_str()))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    unknown.sort_unstable();
+    if !unknown.is_empty() {
+        bail!(
+            "pinned snapshot selects unknown project bundles: {}",
+            unknown.join(", ")
+        );
+    }
+    Ok(())
 }
 
 fn select_bundle_diverse<'a>(
@@ -918,6 +990,82 @@ fn idf_document_frequency_uses_only_current_snapshot_candidates() {
     let all_idf = inverse_document_frequencies(&query_terms, &all);
 
     assert!(current_idf["legacy"] > all_idf["legacy"]);
+}
+
+#[test]
+fn pinned_project_selection_filters_candidates_before_idf_and_ranking() {
+    let context = load_context(&fixture_root(), "meeting-assistant.context.json").unwrap();
+    let selection = PinnedBundleSelection::projects(["atlas"]);
+    let question = "How do the Atlas rollout and Beacon partner onboarding affect each other?";
+    let selected_from_full_context = retrieve_with_selection_and_floor(
+        &context.passages,
+        &selection,
+        question,
+        fixed_now(),
+        8,
+        SYNTHETIC_FIXTURE_RELATIVE_SCORE_FLOOR_PERCENT,
+    )
+    .unwrap();
+
+    let without_beacon = context
+        .passages
+        .iter()
+        .filter(|passage| passage.bundle_id != "beacon")
+        .cloned()
+        .collect::<Vec<_>>();
+    let selected_without_beacon = retrieve_with_selection_and_floor(
+        &without_beacon,
+        &selection,
+        question,
+        fixed_now(),
+        8,
+        SYNTHETIC_FIXTURE_RELATIVE_SCORE_FLOOR_PERCENT,
+    )
+    .unwrap();
+
+    let result_projection = |results: &[RankedPassage<'_>]| {
+        results
+            .iter()
+            .map(|item| (item.passage.passage_id.clone(), item.score))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        result_projection(&selected_from_full_context),
+        result_projection(&selected_without_beacon)
+    );
+    assert!(selected_from_full_context.iter().all(|item| {
+        item.passage.scope != BundleScope::Project || item.passage.bundle_id == "atlas"
+    }));
+}
+
+#[test]
+fn pinned_project_selection_rejects_unknown_bundles_and_allows_none() {
+    let context = load_context(&fixture_root(), "meeting-assistant.context.json").unwrap();
+    let unknown = retrieve_with_selection_and_floor(
+        &context.passages,
+        &PinnedBundleSelection::projects(["unknown-project"]),
+        "What is the project status?",
+        fixed_now(),
+        3,
+        SYNTHETIC_FIXTURE_RELATIVE_SCORE_FLOOR_PERCENT,
+    )
+    .unwrap_err();
+    assert!(unknown
+        .to_string()
+        .contains("pinned snapshot selects unknown project bundles: unknown-project"));
+
+    let no_projects = retrieve_with_selection_and_floor(
+        &context.passages,
+        &PinnedBundleSelection::projects([]),
+        "What is the Atlas rollout status?",
+        fixed_now(),
+        8,
+        SYNTHETIC_FIXTURE_RELATIVE_SCORE_FLOOR_PERCENT,
+    )
+    .unwrap();
+    assert!(no_projects
+        .iter()
+        .all(|item| item.passage.scope != BundleScope::Project));
 }
 
 #[test]

@@ -158,13 +158,14 @@ The score text contains the bundle name, source title, heading breadcrumb, tags,
 Retrieval is local and provider-free:
 
 1. Tokenize the question and candidate fields deterministically.
-2. Exclude expired candidates.
-3. Calculate deterministic inverse document frequency over the current candidate passages in the pinned snapshot, then score candidates using weighted matches across bundle name, headings, tags, and body. Each query term contributes once at its strongest matching field so repeated title text cannot be counted through several fields.
-4. Detect explicit conflicts among current candidates. Relevance to a conflict is established from the semantic terms in its explicit `conflict_key`, not from a single generic body-word overlap.
-5. If a relevant conflict key has more than one current source, fail before any provider request.
-6. Determine eligible bundles from the pinned snapshot and query. An explicitly named project routes deterministically to that project bundle; session-selected bundle eligibility must be preserved separately from lexical passage scores.
-7. Sort deterministically within each eligible bundle, discard weak filler below the configured within-bundle relative-score floor, and build the final budget in bundle-diverse rounds. A limit is a ceiling, not a quota.
-8. Send only selected passages to the provider.
+2. Restrict Project candidates to the explicit `active_project_bundle_ids` pinned in the session snapshot. Person and Role are the context's single required shared bundles. An empty Project selection is valid; an unknown selected ID fails closed.
+3. Exclude expired candidates.
+4. Calculate deterministic inverse document frequency over only those current, session-selected candidate passages, then score candidates using weighted matches across bundle name, headings, tags, and body. Each query term contributes once at its strongest matching field so repeated title text cannot be counted through several fields.
+5. Detect explicit conflicts among current, session-selected candidates. Relevance to a conflict is established from the semantic terms in its explicit `conflict_key`, not from a single generic body-word overlap.
+6. If a relevant conflict key has more than one current source, fail before any provider request.
+7. Determine lexically eligible bundles inside the hard session-selected boundary. An explicitly named project routes deterministically only when that project is active; lexical scoring may narrow the active set but never broaden it.
+8. Sort deterministically within each eligible bundle, discard weak filler below the configured within-bundle relative-score floor, and build the final budget in bundle-diverse rounds. A limit is a ceiling, not a quota.
+9. Send only selected passages to the provider.
 
 Project-name matches receive enough weight to prevent topic bleed when several project bundles are active. They do not replace semantic relevance: a cross-project question may legitimately retrieve passages from several named projects.
 
@@ -189,12 +190,13 @@ Each generated exchange records:
 - context ID;
 - context snapshot digest;
 - identity, role, and project bundle digests;
+- canonically sorted `active_project_bundle_ids` pinned when the session starts;
 - selected passage IDs and content hashes;
 - source labels, revisions, and heading breadcrumbs;
 - retrieval policy version;
 - selected identity, lens, depth, provider, and model provenance already required by Live Assist.
 
-A running or resumed meeting stays pinned to its original snapshot. When source files change, Live Assist offers an explicit **Reload project context** action. It never changes the companion's knowledge silently midway through a meeting.
+A running or resumed meeting stays pinned to its original snapshot, including its active Project bundle set. When source files change or the user wants a different application/project set, Live Assist offers an explicit **Reload project context** action that creates a new pinned snapshot. It never changes the companion's knowledge silently midway through a meeting.
 
 The local database retains the normalized selected passage snapshot needed to explain an answer or resume a meeting even if the original Markdown file is later moved. Source files remain the user-authored canonical corpus.
 
