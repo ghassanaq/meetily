@@ -133,8 +133,8 @@ const EMPTY_SNAPSHOT: AssistSnapshot = {
   contextGeneration: 0,
   stallCount: 0,
   exchanges: [],
-  captureShortcut: 'Ctrl+Alt+Space',
-  followUpShortcut: 'Ctrl+Alt+Shift+Space',
+  captureShortcut: 'F8',
+  followUpShortcut: 'F9',
 }
 
 function errorMessage(error: unknown) {
@@ -457,7 +457,7 @@ export default function LiveAssistPage() {
             </button>
           )}
           <p className="mt-3 text-[10px] leading-4 text-slate-500">
-            {snapshot.captureShortcut}<br />{snapshot.followUpShortcut}<br />Press once to start and again to submit. Esc discards. Auto-submits at 50 seconds.<br />Follow-up attaches to the exchange selected when capture begins.
+            {snapshot.captureShortcut}: question · {snapshot.followUpShortcut}: follow-up<br />Press once to start and the same key again to submit. Esc discards while this window is focused. Auto-submits at 50 seconds.<br />Follow-up attaches to the exchange selected when capture begins.
           </p>
         </aside>
 

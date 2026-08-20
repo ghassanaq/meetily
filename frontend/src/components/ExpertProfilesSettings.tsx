@@ -126,6 +126,13 @@ export function ExpertProfilesSettings() {
     toast.success('Expert profile created as an inactive draft.');
   });
 
+  const createInterviewLens = () => run(async () => {
+    const created = await invoke<{ profile_id: string }>('profile_create_interview_preset');
+    await refreshProfiles();
+    setSelectedId(created.profile_id);
+    toast.success('Interview lens created with Junior, Mid-level, and Expert depth playbooks.');
+  });
+
   const saveVersion = () => run(async () => {
     if (!selectedId) return;
     const version = await invoke<StoredProfileVersion>('profile_create_version', {
@@ -266,8 +273,8 @@ export function ExpertProfilesSettings() {
     <div className="grid gap-6 py-6 lg:grid-cols-[18rem_1fr]">
       <aside className="space-y-3">
         <div>
-          <h2 className="text-lg font-semibold">Expert Profiles</h2>
-          <p className="text-sm text-gray-600">Declarative guidance only. Profiles cannot run tools or scripts.</p>
+          <h2 className="text-lg font-semibold">Meeting Lenses</h2>
+          <p className="text-sm text-gray-600">Lenses control how deeply the selected identity answers. They cannot run tools or scripts.</p>
         </div>
         <Button
           variant="outline"
@@ -283,7 +290,15 @@ export function ExpertProfilesSettings() {
             setConfirmedRemovedPlaybooks([]);
           }}
         >
-          New profile
+          New custom lens
+        </Button>
+        <Button
+          variant="outline"
+          className="w-full"
+          onClick={createInterviewLens}
+          disabled={busy || profiles.some(profile => profile.name.toLowerCase() === 'interview' && !profile.retired_at)}
+        >
+          Create Interview lens
         </Button>
         <div className="space-y-2">
           {profiles.map(profile => (

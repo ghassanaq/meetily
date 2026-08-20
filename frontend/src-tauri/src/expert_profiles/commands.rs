@@ -33,6 +33,7 @@ use super::generation::{
 };
 use super::hashing::{hash_serializable, prompt_renderer_hash};
 use super::models::{EvalPlan, ExpertProfileVersion, GenerationParameters, ModelGenerationBinding};
+use super::presets::{interview_eval_plan, interview_profile, INTERVIEW_PRESET_NAME};
 use super::validation::{parse_eval_plan_json, parse_profile_json};
 use super::OUTPUT_PARSER_VERSION;
 
@@ -189,6 +190,44 @@ pub async fn profile_create(
     let plan_id = Uuid::new_v4();
     let (profile_version, eval_plan) = ExpertProfilesRepository::create_profile_with_plan(
         state.db_manager.pool(),
+        profile_id,
+        plan_id,
+        &profile,
+        &plan,
+    )
+    .await?;
+    Ok(ProfileCreateResponse {
+        profile_id,
+        plan_id,
+        profile_version,
+        eval_plan,
+    })
+}
+
+#[tauri::command]
+pub async fn profile_create_interview_preset(
+    state: tauri::State<'_, AppState>,
+) -> Result<ProfileCreateResponse, ProfileCommandError> {
+    let pool = state.db_manager.pool();
+    let existing = ExpertProfilesRepository::list_profiles(pool).await?;
+    if existing.iter().any(|profile| {
+        profile.retired_at.is_none()
+            && profile.name.eq_ignore_ascii_case(INTERVIEW_PRESET_NAME)
+    }) {
+        return Err(ProfileCommandError::new(
+            "ALREADY_EXISTS",
+            "the Interview lens already exists",
+        ));
+    }
+
+    let profile = interview_profile();
+    let plan = interview_eval_plan(&profile);
+    plan.validate_for_profile(&profile)
+        .map_err(validation_error)?;
+    let profile_id = Uuid::new_v4();
+    let plan_id = Uuid::new_v4();
+    let (profile_version, eval_plan) = ExpertProfilesRepository::create_profile_with_plan(
+        pool,
         profile_id,
         plan_id,
         &profile,

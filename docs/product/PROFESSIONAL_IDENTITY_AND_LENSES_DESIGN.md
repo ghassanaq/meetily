@@ -11,7 +11,7 @@ For a live meeting, the user explicitly selects:
 
 The generated response is written entirely in the first person as the user's ready-to-speak answer. The model is not given tools and cannot execute profile content, change application state, or acquire authority.
 
-The first specialized response contract is one continuously streamed plain-text paragraph of 200–300 words. The first two sentences provide a complete 40–70-word lead, and the remainder expands the same answer naturally. The paragraph contains no headings, lists, Markdown, coaching instructions, or assistant meta-language.
+The first specialized response contract is one continuously streamed plain-text paragraph. The first two sentences provide a complete 40–70-word lead, and the remainder expands the same answer naturally to the depth required by the selected lens and question type. Lens word ranges are soft targets and never justify padding or discarding an otherwise safe answer. The paragraph contains no headings, lists, Markdown, coaching instructions, or assistant meta-language.
 
 General Guidance remains a separate short mode. Its existing optional detail request remains available. Specialized responses hide and reject that legacy detail request.
 
@@ -46,6 +46,20 @@ A lens may define:
 - which identity source categories may be retrieved.
 
 The existing phase-one Expert Profile and embedded Meeting Playbook implementation is the current lens layer. It must not be relabeled as professional identity. A later migration may rename it without changing its content identity or provenance.
+
+### 2.3 Context preset and depth are separate axes
+
+The lens selects the meeting context. Its embedded playbook selects the requested response depth within that context.
+
+The first preset is **Interview**, chosen because interviews exercise the widest and most demanding response patterns. It contains Junior, Mid-level, and Expert playbooks. Interview is not a universal question table: future Workshop, Status Meeting, and other context presets may reuse general question types while defining different contextual types and targets.
+
+Junior, Mid-level, and Expert describe content, not percentage-based length scaling:
+
+- Junior covers the relevant fundamentals, immediate practical application, and explicit limits.
+- Mid-level covers applied judgment, sequencing, stakeholders, meaningful risks or trade-offs, controls, and intended outcomes.
+- Expert covers competing constraints, second-order effects, governance or precedent where relevant, explicit boundaries, and defensible judgment.
+
+The provider selects the closest question type from the selected context preset inside the same generation call and does not print that classification. There is no separate classifier call and no structured-output declaration. The deterministic validator therefore does not claim to know which type the provider selected.
 
 ## 3. Declarative identity schema
 
@@ -156,7 +170,7 @@ For the first specialized lens contract, deterministic production validation req
 
 - provider completion with the normal stop reason;
 - one non-empty paragraph after harmless whitespace is collapsed;
-- a target of 200–300 whitespace-delimited words, with the observed count and any drift recorded as telemetry rather than treated as an unsafe answer;
+- an outer 60–300 whitespace-delimited word range recorded as format telemetry rather than treated as an unsafe answer;
 - the exact safe abstention `I need more context before I can answer that.` is a non-answer exception to the word range;
 - first-person language;
 - no coaching prefix or assistant meta-language; and
@@ -164,7 +178,7 @@ For the first specialized lens contract, deterministic production validation req
 
 The prompt requires the first two sentences to total 40–70 words and form a complete lead. Semantic completeness is measured through the credentialed provider harness and real meeting review rather than claimed as a deterministic code assertion.
 
-Unsafe or incomplete primary output is discarded rather than left visible as a partial answer. Cosmetic whitespace is normalized, and a completed answer outside the target word range remains usable with a recorded format warning.
+Unsafe or incomplete primary output is discarded rather than left visible as a partial answer. Cosmetic whitespace is normalized, and a completed answer outside the outer range remains usable with a recorded format warning. Question-type ranges are soft prompt targets reviewed through provider telemetry and real use because pure prose intentionally carries no machine-readable classification.
 
 ## 9. Detail and grounding controls
 
@@ -195,7 +209,11 @@ Real meeting review records whether the answer was used and, when inadequate, on
 
 - Professional identity and meeting lens are separate; neither is inferred from the other.
 - Existing Expert Profiles are the lens layer, not the user's biography or authority.
-- Specialized output is one continuous first-person 200–300-word paragraph, not bullets or a briefing document.
+- Specialized output is one continuous first-person paragraph, not bullets or a briefing document; depth is defined by required reasoning content rather than a percentage or fixed-length multiplier.
+- Interview is the first context preset because it is the hardest scenario, not because its complete taxonomy is universal. Future Workshop, Status Meeting, and other presets reuse the same lens/playbook machinery.
+- The Interview lens contains Junior, Mid-level, and Expert playbooks. Junior covers fundamentals and immediate application; Mid-level covers applied judgment, sequencing, stakeholders, risks, controls, and outcomes; Expert covers competing constraints, second-order effects, governance or precedent, explicit boundaries, and defensible judgment.
+- The provider classifies the question internally during the single generation call and never prints the type. Runtime validation checks only the outer 60–300-word shape; question-type target fit is telemetry and review evidence.
+- Expert interview answers use question-specific soft word ranges: 200–250 for major career/suitability and behavioural failure; 220–275 for strategic implementation; 80–140 for direct facts or commitments; 140–180 for capability gaps and beneficiary/ethical scenarios; 110–170 for urgent operations; 170–220 for governance/safeguarding/finance and external partnership; and 180–220 for comparative closing.
 - The lead and expansion are one streamed response and one provider call.
 - `Refresh detail` is hidden and rejected for specialized responses but retained for General Guidance.
 - Grounding is passive source metadata from local retrieval, not model-authored text or a second provider call.
