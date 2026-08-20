@@ -162,16 +162,22 @@ Retrieval is local and provider-free:
 3. Score candidates using weighted matches across bundle name, headings, tags, and body.
 4. Detect explicit conflicts among current candidates. Relevance to a conflict is established from the semantic terms in its explicit `conflict_key`, not from a single generic body-word overlap.
 5. If a relevant conflict key has more than one current source, fail before any provider request.
-6. Sort deterministically, discard weak filler below the configured relative-score floor, and apply the configured maximum result limit. A limit is a ceiling, not a quota.
+6. Sort deterministically, discard weak filler below the configured relative-score floor, and apply the configured maximum result limit. A limit is a ceiling, not a quota. This describes the spike selector; real-corpus evidence below shows that production selection also needs source diversity.
 7. Send only selected passages to the provider.
 
 Project-name matches receive enough weight to prevent topic bleed when several project bundles are active. They do not replace semantic relevance: a cross-project question may legitimately retrieve passages from several named projects.
 
 The initial experiment compares result limits of 3, 5, and 8. It does not inherit the identity-record limit of eight without evidence.
 
-The spike's current relative-score floor is **50% of the strongest candidate score**. A candidate remains eligible only when its score is at least `0.5 × best_score`; the maximum result limit is applied afterward. This floor, rather than the limit, determined the selected set in the synthetic experiment. It is therefore an explicit, versioned retrieval-policy parameter, not an incidental implementation detail. Changing it must advance the retrieval policy version and the capability hash that covers retrieval behavior.
+The synthetic fixture uses a relative-score floor of **50% of the strongest candidate score**. A candidate remains eligible only when its score is at least `0.5 × best_score`; the maximum result limit is applied afterward. The test constant is deliberately named `SYNTHETIC_FIXTURE_RELATIVE_SCORE_FLOOR_PERCENT`: 50% demonstrates fixture mechanics and is not a production recommendation. The floor remains an explicit, versioned retrieval-policy parameter. Changing production retrieval behavior must advance the retrieval policy version and the capability hash that covers it.
 
-The 50% value is provisional. A small corpus with disjoint vocabulary makes the gap between strong and weak candidates artificially wide. Real-corpus evaluation must revisit the floor when Person, Role, and Project bundles reuse terms such as approval, escalation, delivery, stakeholder, and risk. A lower floor may admit noise while a higher floor may exclude necessary evidence.
+The 39,695-word private-corpus evaluation invalidated a single global floor as the complete selection policy. The original 12 questions all expected evidence from one structurally advantaged Q&A source, so their success at 85% did not establish cross-source recall. Three deliberately diversified cases then failed throughout a 50–85% sweep:
+
+- For a question absent from the Q&A source, the answer-bearing directive passage ranked second at 50–70%, alongside too much same-document noise; at 75–85%, the title/preamble passage remained while the answer was excluded.
+- For a split role-and-professional-evidence question, all top-three positions were occupied by adjacent role-document chunks at every measured floor, excluding the required professional-evidence passage.
+- For partial Q&A coverage plus an exact role fact, the same three role-document chunks occupied the top three at every measured floor, excluding the required Q&A passage.
+
+Neither 50% nor 85% is therefore a supported production value. The next selector experiment must prevent one source from monopolizing the result budget while preserving genuinely split evidence. The leading design is a source- or bundle-diverse shortlist—for example, retain the strongest candidate from each relevant bundle before applying within-bundle floors and a final global budget—but that policy remains uncommitted until it passes the private regression suite.
 
 ## 9. Provenance and session snapshots
 

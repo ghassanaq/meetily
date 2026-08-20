@@ -11,7 +11,7 @@ use uuid::Uuid;
 const CONTEXT_SCHEMA_VERSION: u32 = 1;
 const DOCUMENT_SCHEMA_VERSION: u32 = 1;
 const MAX_PASSAGE_WORDS: usize = 180;
-const CURRENT_RELATIVE_SCORE_FLOOR_PERCENT: usize = 50;
+const SYNTHETIC_FIXTURE_RELATIVE_SCORE_FLOOR_PERCENT: usize = 50;
 const PRIVATE_CONTEXT_PATH_ENV: &str = "PROJECT_CONTEXT_PATH";
 const PRIVATE_EVALUATION_FILE: &str = "retrieval-eval.json";
 const HASH_DOMAIN: &[u8] = b"meeting-assistant-project-passage-v1\0";
@@ -495,7 +495,7 @@ fn retrieve<'a>(
         question,
         now,
         limit,
-        CURRENT_RELATIVE_SCORE_FLOOR_PERCENT,
+        SYNTHETIC_FIXTURE_RELATIVE_SCORE_FLOOR_PERCENT,
     )
 }
 
@@ -772,7 +772,7 @@ fn private_corpus_measurement_rules_are_ci_covered_on_synthetic_data() {
         schema_version: CONTEXT_SCHEMA_VERSION,
         context_manifest: "meeting-assistant.context.json".to_string(),
         evaluated_at: "2026-08-20T00:00:00Z".to_string(),
-        relative_score_floor_percent: CURRENT_RELATIVE_SCORE_FLOOR_PERCENT,
+        relative_score_floor_percent: SYNTHETIC_FIXTURE_RELATIVE_SCORE_FLOOR_PERCENT,
         cases: private_cases,
     };
 
