@@ -19,7 +19,7 @@ if (-not [Environment]::GetEnvironmentVariable("MEETING_ASSISTANT_LIVE_API_KEY",
 
 Push-Location $repositoryRoot
 try {
-    & cargo test -p meetily reference_provider_preserves_voice_and_does_not_invent_commitment_history --lib -- --ignored --nocapture
+    & cargo test -p meetily reference_provider_ --lib -- --ignored --nocapture
     if ($LASTEXITCODE -ne 0) {
         throw "The Live Assist voice harness failed."
     }
