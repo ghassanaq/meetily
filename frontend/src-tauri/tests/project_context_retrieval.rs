@@ -699,17 +699,26 @@ fn eligible_bundle_ids<'a>(
         .iter()
         .filter(|item| item.passage.scope == BundleScope::Project)
         .filter(|item| {
-            let bundle_terms = tokenize(&format!(
-                "{} {}",
-                item.passage.bundle_id, item.passage.bundle_name
-            ));
-            !query_terms.is_disjoint(&bundle_terms)
+            label_is_explicitly_named(query_terms, &item.passage.bundle_id)
+                || label_is_explicitly_named(query_terms, &item.passage.bundle_name)
         })
         .map(|item| item.passage.bundle_id.as_str())
         .collect::<HashSet<_>>();
 
     if !explicitly_named_projects.is_empty() {
-        return explicitly_named_projects;
+        return ranked
+            .iter()
+            .filter(|item| {
+                if item.passage.scope == BundleScope::Project {
+                    return explicitly_named_projects.contains(item.passage.bundle_id.as_str());
+                }
+                query_terms
+                    .intersection(&passage_score_terms(item.passage))
+                    .count()
+                    >= SPIKE_MIN_PERSON_ROLE_BUNDLE_QUERY_TERMS
+            })
+            .map(|item| item.passage.bundle_id.as_str())
+            .collect();
     }
 
     ranked
@@ -727,6 +736,12 @@ fn eligible_bundle_ids<'a>(
         })
         .map(|item| item.passage.bundle_id.as_str())
         .collect()
+}
+
+fn label_is_explicitly_named(query_terms: &HashSet<String>, label: &str) -> bool {
+    let label_terms = tokenize(label);
+    let required_matches = label_terms.len().min(2);
+    required_matches > 0 && query_terms.intersection(&label_terms).count() >= required_matches
 }
 
 fn conflict_key_matches(query_terms: &HashSet<String>, conflict_key: &str) -> bool {
@@ -1116,6 +1131,22 @@ fn bundle_diverse_shortlist_prevents_one_bundle_from_taking_every_slot() {
     assert_eq!(selected.len(), 2);
     assert_eq!(selected[0].passage.passage_id, ATLAS_STATUS);
     assert_eq!(selected[1].passage.passage_id, BEACON_STATUS);
+}
+
+#[test]
+fn explicit_project_routing_requires_a_distinctive_name_match() {
+    assert!(label_is_explicitly_named(
+        &tokenize("What is the Atlas rollout status?"),
+        "atlas"
+    ));
+    assert!(label_is_explicitly_named(
+        &tokenize("Why Children Not Numbers?"),
+        "children-not-numbers-interview"
+    ));
+    assert!(!label_is_explicitly_named(
+        &tokenize("Have you managed programmes for Palestinian children?"),
+        "children-not-numbers-interview"
+    ));
 }
 
 #[test]
