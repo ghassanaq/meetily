@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "bundle_id": "person",
+  "name": "Professional Identity",
+  "sources": [
+    "professional-background.md"
+  ]
+}
