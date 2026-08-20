@@ -11,6 +11,7 @@ pub mod evaluation;
 pub mod generation;
 pub mod hashing;
 pub mod models;
+pub mod presets;
 pub mod rendering;
 pub mod safety_gate;
 pub mod validation;
