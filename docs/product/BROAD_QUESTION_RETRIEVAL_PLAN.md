@@ -1,6 +1,14 @@
 # Broad-Question Retrieval and Composition Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+Status: superseded before execution on 2026-08-21.
+
+The task-by-task plan below was not executed. Review of Mishkat's existing compose/edit
+services showed that Meeting Assistant already possessed most of the required boundaries:
+provider rails, versioned expert profiles, provenance, and post-generation validation. The
+implemented path therefore adds only a versioned `professional-introduction/v1` compose brief,
+deterministic evidence selection/budgeting, prompt handling for that brief, and stricter
+plain-text validation. Keep this document as a design inventory for future expansion; do not
+treat its checkpoints or embedded worker instructions as current work instructions.
 
 **Goal:** Make Live Assist answer broad interview questions from a deliberately composed, budgeted, conflict-resolved evidence package instead of records that happen to contain the filler word "about".
 

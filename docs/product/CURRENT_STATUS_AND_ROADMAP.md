@@ -24,17 +24,21 @@ This file is the concise operational view of what is done and what comes next. P
 - Disabled silent `.env` fallback after the first UI-managed provider is saved. Environment configuration remains only a bootstrap fallback before managed mode begins.
 - Verified the Provider Settings implementation with focused Rust tests, `cargo check`, frontend typecheck, frontend tests, a production Next build, a release build with `custom-protocol`, database migration inspection, relaunch behavior, and Ghassan's successful manual UI check.
 - Separated the former dirty implementation tree into eight coherent local commits: migration line endings, provider adapters, Markdown importer, evaluator hardening, provider metadata schema, secure Provider Settings, launcher behavior, and product documentation. The six earlier local commits were preserved without rewriting history.
+- Reviewed Mishkat's compose/edit service architecture and adapted its governing boundary rather than porting unrelated editorial code: broad professional introductions now receive an explicit, versioned evidence brief before provider generation, while specific questions retain lexical retrieval.
+- Added `professional-introduction/v1` routing for common self-introduction/background phrasings, deterministic CV-first evidence ordering, source provenance, a 7,000-character evidence budget, and a 1,200-character per-record cap that omits content rather than cutting a claim mid-sentence. Contested facts are suppressed from the broad brief; specific lexical questions retain the existing fail-closed conflict error.
+- Tightened the plain-text boundary: matching outer emphasis wrappers are removed immediately from the streamed display and normalized at completion with a recorded warning; inline emphasis and code Markdown remain invalid.
+- Verified the change with 20 focused Professional Identity tests, 18 focused Live Assist tests, three focused streaming-display tests, the full Rust and frontend suites, TypeScript typechecking, and a production release rebuild.
 
 ## Current finding
 
-The active imported context contains the broader career evidence. The narrow answers come from production retrieval: a generic question such as `Tell us about yourself` has little literal overlap with career-section records, so only a small high-overlap slice reaches either model. The next fix belongs in retrieval/composition, not in API-key or provider switching.
+The active imported context contains the broader career evidence. The narrow-answer defect was in production retrieval: `Tell us about yourself` had little literal overlap with career records. That canonical path now bypasses lexical ranking and supplies a governed career brief. The remaining product question is answer quality on the private corpus and configured providers, not whether the model received the broader evidence.
 
 ## Next
 
-1. **Implement broad interview composition.** Detect broad career-introduction questions within the Interview lens and assemble a bounded evidence set containing career overview/progression plus representative frontline, leadership/emergency or regional, and current-role-fit evidence.
-2. **Enforce answer form.** Deterministically reject or safely normalize inline Markdown and retain exact shared-authority and quantitative qualifiers.
-3. **Verify without leaking private data.** Run focused unit/integration fixtures and the ignored real-corpus workload against the configured providers. Store no private answer text in tracked files.
-4. **Run the use loop.** Freeze provider, identity version, lens/depth, and retrieval configuration; run a mock interview and then five real meeting/interview trials. Record question, word count, used/not used, answer fit, continuity correctness, and one-line missing-context notes.
+1. **Verify without leaking private data.** Run the ignored real-corpus workload and a manual `Tell us about yourself` request against the configured provider. Store no private answer text in tracked files.
+2. **Assess the brief, not the provider.** Confirm the grounding-source list spans the expected CV/career sections and that the response covers progression, current strengths, and role relevance without invented transitions.
+3. **Extend compose profiles only from observed misses.** Add a separate governed brief for suitability or career-arc questions only if real trials show that the professional-introduction contract cannot serve them.
+4. **Run the use loop.** Freeze provider, identity version, lens/depth, and compose profile; run a mock interview and then five real meeting/interview trials. Record question, word count, used/not used, answer fit, continuity correctness, and one-line missing-context notes.
 
 ## Later
 
@@ -48,7 +52,7 @@ The active imported context contains the broader career evidence. The narrow ans
 
 - OpenAI is not configured; Ghassan will add its key later through Provider Settings.
 - Live Assist exchanges are still memory-only.
-- Generic interview prompts do not yet trigger broad career composition.
-- Inline Markdown is not yet deterministically blocked or normalized.
+- Broad composition currently covers professional-introduction/background questions only; suitability, strengths, motivation, and career-arc questions still use lexical retrieval.
+- Only a matching outer emphasis wrapper is normalized. Inline emphasis and code Markdown are still rejected so structurally unsafe provider output fails visibly.
 - Full production Project Context architecture is not yet implemented.
 - The semantic judge is not a runtime safety oracle; Ghassan remains the final live-use gate.

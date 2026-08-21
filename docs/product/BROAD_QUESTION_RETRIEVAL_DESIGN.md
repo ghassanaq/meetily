@@ -1,9 +1,17 @@
 # Broad-Question Retrieval and Composition Design
 
-Status: approved for documentation; implementation pending review
+Status: superseded as the immediate implementation design; retained as an expansion reference
 Date: 2026-08-21
 Scope: `professional_identity` retrieval, `live_assist` policy derivation
 Complements: `PROJECT_CONTEXT_DESIGN.md`
+
+> Implementation note (2026-08-21): after reviewing Mishkat's production compose/edit
+> services, the first shipped fix uses the smaller service boundary already proven there:
+> an explicit versioned compose brief before generation and deterministic validation after
+> generation. `professional-introduction/v1` handles canonical self-introduction/background
+> questions with CV-first ordering and fixed evidence budgets. The configurable dimensions,
+> schema discriminator, runtime override, diagnostics UI, and migration described below were
+> not implemented. They remain possible extensions only if real-use evidence requires them.
 
 ## 1. Problem
 
