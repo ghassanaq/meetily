@@ -6,6 +6,7 @@
 //! never relies on model-authored provenance.
 
 pub mod commands;
+mod composition;
 pub mod markdown_import;
 pub mod repository;
 
@@ -122,6 +123,8 @@ pub struct RetrievedIdentityContext {
 #[derive(Serialize)]
 struct PromptIdentityContext<'a> {
     context_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compose_profile: Option<&'static str>,
     identity: &'a ProfessionalIdentityHeader,
     records: Vec<PromptIdentityRecord<'a>>,
 }
@@ -147,6 +150,8 @@ struct Candidate<'a> {
     valid_until: Option<&'a str>,
     conflict_key: Option<&'a str>,
     score_text: String,
+    composition_priority: u8,
+    document_order: usize,
 }
 
 pub fn parse_identity_json(input: &str) -> Result<ProfessionalIdentityVersion> {
@@ -264,6 +269,7 @@ pub fn retrieve_identity_context(
     validate_identity(profile)?;
     let query_terms = tokenize(question);
     let mut candidates = Vec::new();
+    let mut document_order = 0usize;
 
     for record in &profile.records {
         candidates.push(Candidate {
@@ -282,7 +288,14 @@ pub fn retrieve_identity_context(
                 record.tags.join(" "),
                 record.conflict_key.as_deref().unwrap_or_default()
             ),
+            composition_priority: composition::evidence_priority(
+                record.category,
+                &record.title,
+                &record.tags,
+            ),
+            document_order,
         });
+        document_order += 1;
     }
     for project in &profile.projects {
         let project_title = project.name.as_str();
@@ -306,7 +319,10 @@ pub fn retrieve_identity_context(
                 project.status,
                 project.tags.join(" ")
             ),
+            composition_priority: 3,
+            document_order,
         });
+        document_order += 1;
         for fact in &project.facts {
             candidates.push(Candidate {
                 id: fact.id,
@@ -318,10 +334,14 @@ pub fn retrieve_identity_context(
                 valid_until: project.valid_until.as_deref(),
                 conflict_key: fact.conflict_key.as_deref(),
                 score_text: format!("{} {} {}", project.name, fact.content, fact.tags.join(" ")),
+                composition_priority: 3,
+                document_order,
             });
+            document_order += 1;
         }
     }
 
+    let compose_professional_introduction = composition::is_professional_introduction(question);
     let conflicting_key_counts = candidates
         .iter()
         .filter(|candidate| !is_expired(candidate.valid_until, now))
@@ -330,17 +350,32 @@ pub fn retrieve_identity_context(
             *counts.entry(key.to_string()).or_insert(0usize) += 1;
             counts
         });
-    let mut ranked: Vec<(usize, Candidate<'_>)> = candidates
-        .into_iter()
-        .filter(|candidate| !is_expired(candidate.valid_until, now))
-        .map(|candidate| {
-            (
-                lexical_score(&query_terms, &candidate.score_text),
-                candidate,
-            )
-        })
-        .filter(|(score, _)| *score > 0)
-        .collect();
+    let mut ranked: Vec<(usize, Candidate<'_>)> = if compose_professional_introduction {
+        candidates
+            .into_iter()
+            .filter(|candidate| !is_expired(candidate.valid_until, now))
+            .filter(|candidate| {
+                candidate.conflict_key.map_or(true, |key| {
+                    conflicting_key_counts
+                        .get(key)
+                        .map_or(true, |count| *count <= 1)
+                })
+            })
+            .map(|candidate| (0, candidate))
+            .collect()
+    } else {
+        candidates
+            .into_iter()
+            .filter(|candidate| !is_expired(candidate.valid_until, now))
+            .map(|candidate| {
+                (
+                    lexical_score(&query_terms, &candidate.score_text),
+                    candidate,
+                )
+            })
+            .filter(|(score, _)| *score > 0)
+            .collect()
+    };
     let mut relevant_conflicting_keys = ranked
         .iter()
         .filter_map(|(_, candidate)| candidate.conflict_key)
@@ -359,12 +394,22 @@ pub fn retrieve_identity_context(
             relevant_conflicting_keys.join(", ")
         ));
     }
-    ranked.sort_by(|(left_score, left), (right_score, right)| {
-        right_score
-            .cmp(left_score)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    ranked.truncate(MAX_RETRIEVED_SOURCES);
+    if compose_professional_introduction {
+        ranked.sort_by(|(_, left), (_, right)| {
+            left.composition_priority
+                .cmp(&right.composition_priority)
+                .then_with(|| left.document_order.cmp(&right.document_order))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        apply_composition_budget(&mut ranked);
+    } else {
+        ranked.sort_by(|(left_score, left), (right_score, right)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        ranked.truncate(MAX_RETRIEVED_SOURCES);
+    }
 
     let records = ranked
         .iter()
@@ -388,7 +433,13 @@ pub fn retrieve_identity_context(
         })
         .collect();
     let prompt_json = serde_json::to_string(&PromptIdentityContext {
-        context_type: "professional_identity",
+        context_type: if compose_professional_introduction {
+            "professional_identity_composition"
+        } else {
+            "professional_identity"
+        },
+        compose_profile: compose_professional_introduction
+            .then_some(composition::PROFESSIONAL_INTRODUCTION_PROFILE),
         identity: &profile.identity,
         records,
     })?;
@@ -397,6 +448,24 @@ pub fn retrieve_identity_context(
         prompt_json,
         sources,
     })
+}
+
+fn apply_composition_budget(ranked: &mut Vec<(usize, Candidate<'_>)>) {
+    let mut remaining = composition::TOTAL_EVIDENCE_CHAR_BUDGET;
+    let mut selected = 0usize;
+    ranked.retain_mut(|(_, candidate)| {
+        if selected >= MAX_RETRIEVED_SOURCES || remaining == 0 {
+            return false;
+        }
+        let cap = remaining.min(composition::PER_RECORD_CHAR_BUDGET);
+        let Some(excerpt) = composition::evidence_excerpt(&candidate.content, cap) else {
+            return false;
+        };
+        remaining = remaining.saturating_sub(excerpt.chars().count());
+        candidate.content = excerpt;
+        selected += 1;
+        true
+    });
 }
 
 fn category_name(category: IdentityRecordCategory) -> &'static str {
@@ -535,6 +604,136 @@ mod tests {
         assert_eq!(result.sources.len(), 1);
         assert_eq!(result.sources[0].label, "Head of Mission TOR");
         assert!(result.prompt_json.contains("weekly check-ins"));
+        assert!(result
+            .prompt_json
+            .contains(r#""context_type":"professional_identity""#));
+        assert!(!result.prompt_json.contains("compose_profile"));
+    }
+
+    #[test]
+    fn professional_introduction_composes_a_career_brief_in_document_order() {
+        let mut identity = sample_identity();
+        identity.records.extend([
+            IdentityRecord {
+                id: Uuid::from_u128(2),
+                category: IdentityRecordCategory::Cv,
+                title: "Earlier programme delivery".to_string(),
+                content: "I coordinated regional programme delivery and partner reporting."
+                    .to_string(),
+                source: IdentitySource {
+                    label: "Professional CV".to_string(),
+                    revision: "2026-08".to_string(),
+                },
+                updated_at: "2026-08-12T00:00:00Z".to_string(),
+                valid_until: None,
+                conflict_key: None,
+                tags: vec!["experience".to_string(), "programme".to_string()],
+            },
+            IdentityRecord {
+                id: Uuid::from_u128(3),
+                category: IdentityRecordCategory::Cv,
+                title: "Current operations leadership".to_string(),
+                content: "I lead daily operations, train colleagues, and resolve complex cases."
+                    .to_string(),
+                source: IdentitySource {
+                    label: "Professional CV".to_string(),
+                    revision: "2026-08".to_string(),
+                },
+                updated_at: "2026-08-12T00:00:00Z".to_string(),
+                valid_until: None,
+                conflict_key: None,
+                tags: vec!["leadership".to_string(), "operations".to_string()],
+            },
+        ]);
+
+        let result = retrieve_identity_context(
+            &identity,
+            "Tell us about yourself.",
+            DateTime::parse_from_rfc3339("2026-08-18T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+        let prompt: serde_json::Value = serde_json::from_str(&result.prompt_json).unwrap();
+        assert_eq!(prompt["context_type"], "professional_identity_composition");
+        assert_eq!(
+            prompt["compose_profile"],
+            composition::PROFESSIONAL_INTRODUCTION_PROFILE
+        );
+        assert_eq!(result.sources.len(), 3);
+        assert_eq!(result.sources[0].record_id, Uuid::from_u128(2));
+        assert_eq!(result.sources[1].record_id, Uuid::from_u128(3));
+        assert!(result.prompt_json.contains("regional programme delivery"));
+        assert!(result.prompt_json.contains("lead daily operations"));
+    }
+
+    #[test]
+    fn imported_context_routes_a_broad_introduction_to_professional_background() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/project_context/meeting-assistant.context.json");
+        let imported =
+            markdown_import::load_context_manifest(&manifest, Some(sample_identity().identity))
+                .unwrap();
+        let result = retrieve_identity_context(
+            &imported.identity,
+            "Tell us about yourself.",
+            DateTime::parse_from_rfc3339("2026-08-18T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+        let prompt: serde_json::Value = serde_json::from_str(&result.prompt_json).unwrap();
+        assert_eq!(prompt["context_type"], "professional_identity_composition");
+        assert!(result
+            .prompt_json
+            .contains("twelve years of leadership experience"));
+        assert_eq!(result.sources.first().unwrap().label, "Professional CV");
+        assert!(!result.prompt_json.contains("20,000 USD"));
+        assert!(!result.prompt_json.contains("30,000 USD"));
+    }
+
+    #[test]
+    fn composition_caps_each_record_and_the_total_evidence_budget() {
+        let mut identity = sample_identity();
+        identity.records.clear();
+        let sentence = "I coordinated a documented operational workstream with partners. ";
+        for id in 1..=8 {
+            identity.records.push(IdentityRecord {
+                id: Uuid::from_u128(id),
+                category: IdentityRecordCategory::Cv,
+                title: format!("Career evidence {id}"),
+                content: sentence.repeat(40),
+                source: IdentitySource {
+                    label: format!("CV section {id}"),
+                    revision: "current".to_string(),
+                },
+                updated_at: "2026-08-12T00:00:00Z".to_string(),
+                valid_until: None,
+                conflict_key: None,
+                tags: vec!["experience".to_string()],
+            });
+        }
+
+        let result = retrieve_identity_context(
+            &identity,
+            "Could you walk me through your background?",
+            DateTime::parse_from_rfc3339("2026-08-18T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+        let prompt: serde_json::Value = serde_json::from_str(&result.prompt_json).unwrap();
+        let records = prompt["records"].as_array().unwrap();
+        let total = records
+            .iter()
+            .map(|record| record["content"].as_str().unwrap().chars().count())
+            .sum::<usize>();
+        assert!(records.len() <= MAX_RETRIEVED_SOURCES);
+        assert!(records.iter().all(|record| {
+            record["content"].as_str().unwrap().chars().count()
+                <= composition::PER_RECORD_CHAR_BUDGET
+        }));
+        assert!(total <= composition::TOTAL_EVIDENCE_CHAR_BUDGET);
     }
 
     #[test]
