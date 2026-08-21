@@ -46,4 +46,4 @@ if (-not $BinaryPath -or -not (Test-Path -LiteralPath $BinaryPath)) {
 }
 
 $resolvedBinary = (Resolve-Path -LiteralPath $BinaryPath).Path
-Start-Process -FilePath $resolvedBinary -ArgumentList "--live-assist" -WorkingDirectory (Split-Path -Parent $resolvedBinary)
+Start-Process -FilePath $resolvedBinary -ArgumentList "--live-assist" -WorkingDirectory (Split-Path -Parent $resolvedBinary) -WindowStyle Hidden
