@@ -483,6 +483,14 @@ The private real-corpus command and workload paths are documented inside the ign
 
 For private testing details, inspect the ignored corpus README, retrieval results, credentialled run plan, authoring gaps, and active manifest locally. Never quote sensitive source content into Git.
 
-## 16. Final instruction
+## 16. 2026-08-22 implementation addendum
 
-The next session must inherit the product before acting. Read the product handoff, this session handoff, and the current status/roadmap; inspect Git and runtime state; report readiness; and continue only the task Ghassan actually requests. The first unfinished planned action is Step 2: fix broad-question composition and inline-Markdown handling.
+- Broad professional-introduction composition and streaming plain-text normalization are implemented and verified.
+- Authority-scope Checkpoints A and B are locally committed. The private five-answer gate passed with five true negatives and no tracked answer text.
+- Ghassan explicitly approved Checkpoint C. Version-bound offline/advisory policy state, aggregate dismissal feedback, post-completion local matching, exact-exchange dismissal/evidence commands, and the three-state Live Assist/Settings UI are implemented.
+- Focused authority tests pass, all 18 frontend tests pass, the Next production build passes, the full Rust library suite passes with 353 passed and 7 intentionally ignored, and all five protected migrations are LF-only.
+- The remaining actions are the release build, relaunch, manual positive/negative UI verification, and commit/review. Advisory activation must remain explicit and tied to the exact immutable identity hash.
+
+## 17. Final instruction
+
+The next session must inherit the product before acting. Read the product handoff, this session handoff, and the current status/roadmap; inspect Git and runtime state; report readiness; and continue only the task Ghassan actually requests. The first unfinished action is to complete Checkpoint C release/manual verification without weakening its advisory, local-only, exact-version boundaries.

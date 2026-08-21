@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
+use super::authority_scope_repository::{AuthorityScopePolicyStatus, AuthorityScopeRepository};
 use super::markdown_import::{load_context_manifest, stable_context_identity_id};
 use super::repository::{
     ProfessionalIdentityRepository, ProfessionalIdentityRepositoryError,
@@ -156,6 +157,56 @@ pub async fn identity_get(
             }
             .into()
         })
+}
+
+#[tauri::command]
+pub async fn authority_scope_policy_get(
+    state: tauri::State<'_, AppState>,
+    identity_id: Uuid,
+    version_hash: String,
+) -> Result<AuthorityScopePolicyStatus, IdentityCommandError> {
+    let identity =
+        ProfessionalIdentityRepository::get(state.db_manager.pool(), identity_id, &version_hash)
+            .await?
+            .ok_or_else(|| ProfessionalIdentityRepositoryError::VersionNotFound {
+                identity_id,
+                version_hash: version_hash.clone(),
+            })?;
+    AuthorityScopeRepository::status(
+        state.db_manager.pool(),
+        identity_id,
+        &version_hash,
+        !identity.authority_constraints.is_empty(),
+    )
+    .await
+    .map_err(parse_error)
+}
+
+#[tauri::command]
+pub async fn authority_scope_policy_activate(
+    state: tauri::State<'_, AppState>,
+    identity_id: Uuid,
+    version_hash: String,
+    confirmation: String,
+) -> Result<AuthorityScopePolicyStatus, IdentityCommandError> {
+    if confirmation != "ACTIVATE AUTHORITY WARNINGS" {
+        return Err(IdentityCommandError {
+            code: "CONFIRMATION_REQUIRED".to_string(),
+            message: "Type ACTIVATE AUTHORITY WARNINGS to activate advisory display for this exact version.".to_string(),
+        });
+    }
+    let current =
+        authority_scope_policy_get(state.clone(), identity_id, version_hash.clone()).await?;
+    if !current.configured {
+        return Err(IdentityCommandError {
+            code: "NOT_CONFIGURED".to_string(),
+            message: "This identity version has no enrolled authority rules.".to_string(),
+        });
+    }
+    AuthorityScopeRepository::activate(state.db_manager.pool(), identity_id, &version_hash)
+        .await
+        .map_err(parse_error)?;
+    authority_scope_policy_get(state, identity_id, version_hash).await
 }
 
 #[tauri::command]

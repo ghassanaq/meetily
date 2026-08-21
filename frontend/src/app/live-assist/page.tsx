@@ -7,6 +7,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize, type PhysicalSize } from '@tauri-apps/api/dpi'
 import { displayLiveAssistAnswer } from '@/lib/live-assist-answer'
 import { shouldApplySnapshotResponse } from '@/lib/live-assist-snapshot'
+import { authorityIndicator, highlightedAuthoritySentence, type AuthorityCheck, type AuthorityWarning } from '@/lib/authority-scope-warning'
 import {
   ChevronLeft,
   ChevronRight,
@@ -45,6 +46,7 @@ type AssistExchange = {
   answer: string
   answerWordCount: number | null
   answerFormatWarnings: string[]
+  authorityCheck: AuthorityCheck | null
   detail: string
   detailStatus: ExchangeStatus | null
   detailTruncated: boolean
@@ -115,6 +117,8 @@ type GroundingSource = {
   updatedAt: string
 }
 
+type AuthorityEvidenceItem = GroundingSource & { title: string; excerpt: string | null }
+
 const EMPTY_SNAPSHOT: AssistSnapshot = {
   armed: false,
   receiving: false,
@@ -174,6 +178,7 @@ export default function LiveAssistPage() {
   const [booting, setBooting] = useState(true)
   const [actionError, setActionError] = useState<string | null>(null)
   const [identityManagerOpen, setIdentityManagerOpen] = useState(false)
+  const [authorityEvidence, setAuthorityEvidence] = useState<Record<string, AuthorityEvidenceItem[]>>({})
   const paintMeasurementPending = useRef(new Set<string>())
   const previousWindowSize = useRef<PhysicalSize | null>(null)
   const nextSnapshotRequestId = useRef(0)
@@ -358,6 +363,26 @@ export default function LiveAssistPage() {
     if (target) void run(() => invoke<AssistSnapshot>('assist_select_exchange', { exchangeId: target.id }))
   }
 
+  const dismissAuthorityWarning = (warning: AuthorityWarning) => {
+    if (!current) return
+    void run(() => invoke<AssistSnapshot>('assist_dismiss_authority_warning', {
+      exchangeId: current.id, ruleId: warning.ruleId,
+    }))
+  }
+
+  const inspectAuthorityEvidence = async (warning: AuthorityWarning, includeExcerpt: boolean) => {
+    if (!current) return
+    try {
+      setActionError(null)
+      const items = await invoke<AuthorityEvidenceItem[]>('assist_inspect_authority_evidence', {
+        exchangeId: current.id, ruleId: warning.ruleId, includeExcerpt,
+      })
+      setAuthorityEvidence(existing => ({ ...existing, [`${current.id}|${warning.ruleId}`]: items }))
+    } catch (error) {
+      setActionError(errorMessage(error))
+    }
+  }
+
   const toggleCloud = () => {
     if (!snapshot.cloudEnabled && !snapshot.providerConfigured) {
       setActionError('Cloud is not configured. Launch with the Live Assist API environment variables set.')
@@ -513,6 +538,33 @@ export default function LiveAssistPage() {
                 <>
                   <h1 className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">Your response</h1>
                   <p className="max-w-3xl text-lg font-semibold leading-7 text-white">{displayLiveAssistAnswer(current.answer)}</p>
+                  {current.status === 'complete' && current.authorityCheck && authorityIndicator(current.authorityCheck) === 'not_configured' && (
+                    <p className="mt-3 max-w-3xl rounded-md border border-slate-600/40 bg-slate-800/50 px-3 py-2 text-xs text-slate-300">
+                      Authority rules not configured for this identity version. No scope verification was performed.
+                    </p>
+                  )}
+                  {current.status === 'complete' && current.authorityCheck && authorityIndicator(current.authorityCheck) === 'checked' && (
+                    <p className="mt-3 max-w-3xl rounded-md border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-xs text-cyan-100">
+                      Checked {current.authorityCheck.evaluatedRuleCount} enrolled authority rule{current.authorityCheck.evaluatedRuleCount === 1 ? '' : 's'}; no rule matched. This is not comprehensive factual verification.
+                    </p>
+                  )}
+                  {current.status === 'complete' && current.authorityCheck?.warnings.map(warning => {
+                    const highlighted = highlightedAuthoritySentence(warning)
+                    const evidenceKey = `${current.id}|${warning.ruleId}`
+                    const evidence = authorityEvidence[evidenceKey]
+                    return (
+                      <aside key={warning.ruleId} className="mt-3 max-w-3xl rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-50">
+                        <p className="font-bold">Check authority scope · {warning.ruleLabel}</p>
+                        <p className="mt-1 leading-5">{highlighted.before}<mark className="rounded bg-amber-300 px-0.5 text-slate-950">{highlighted.matched}</mark>{highlighted.after}</p>
+                        <p className="mt-1 text-amber-100/75">A local enrolled rule matched this claim. Review it; the warning is advisory.</p>
+                        <div className="mt-2 flex gap-2">
+                          <button type="button" onClick={() => void inspectAuthorityEvidence(warning, false)} className="rounded bg-amber-100/10 px-2 py-1 font-semibold hover:bg-amber-100/20">Inspect evidence</button>
+                          <button type="button" onClick={() => dismissAuthorityWarning(warning)} className="rounded bg-white/10 px-2 py-1 font-semibold hover:bg-white/15">Dismiss this exchange</button>
+                        </div>
+                        {evidence && <div className="mt-2 border-t border-amber-100/15 pt-2">{evidence.map(item => <div key={item.recordId} className="mb-2"><p className="font-semibold">{item.title} · {item.label} · {item.revision}</p>{item.excerpt ? <p className="mt-1 whitespace-pre-wrap text-amber-50/80">{item.excerpt}</p> : <button type="button" onClick={() => void inspectAuthorityEvidence(warning, true)} className="mt-1 underline">Show source excerpt</button>}</div>)}</div>}
+                      </aside>
+                    )
+                  })}
                   {current.identityId && (
                     <p className="mt-2 max-w-3xl text-[10px] leading-4 text-slate-500">
                       {current.groundingSources.length > 0

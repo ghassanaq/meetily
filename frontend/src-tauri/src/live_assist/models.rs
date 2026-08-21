@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::professional_identity::authority_scope::AuthorityCheckResult;
+use crate::professional_identity::authority_scope_repository::AuthorityScopePolicyMode;
 use crate::professional_identity::GroundingSource;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -57,6 +59,11 @@ pub struct AssistExchange {
     pub answer: String,
     pub answer_word_count: Option<u32>,
     pub answer_format_warnings: Vec<String>,
+    pub authority_check: Option<AuthorityCheckResult>,
+    #[serde(skip)]
+    pub authority_policy_mode: Option<AuthorityScopePolicyMode>,
+    #[serde(skip)]
+    pub dismissed_authority_rule_ids: Vec<String>,
     pub detail: String,
     pub detail_status: Option<AssistExchangeStatus>,
     pub detail_truncated: bool,
@@ -72,6 +79,17 @@ pub struct AssistExchange {
     pub build_revision: String,
     pub created_at: String,
     pub timings: AssistTimings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorityEvidenceItem {
+    pub record_id: Uuid,
+    pub title: String,
+    pub label: String,
+    pub revision: String,
+    pub updated_at: String,
+    pub excerpt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

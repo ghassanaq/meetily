@@ -19,6 +19,15 @@ type ImportedProfessionalIdentity = StoredProfessionalIdentityVersion & {
   record_count: number
 }
 
+type AuthorityScopePolicyStatus = {
+  identityId: string
+  identityVersionHash: string
+  configured: boolean
+  mode: 'offline' | 'advisory'
+  activatedAt: string | null
+  totalDismissals: number
+}
+
 type Props = {
   onClose: () => void
   onSaved?: (identity: SavedProfessionalIdentity) => void | Promise<void>
@@ -105,6 +114,7 @@ export function ProfessionalIdentitySettings({ onClose, onSaved }: Props) {
   const [form, setForm] = useState<ProfessionalIdentityVersion>(blankIdentity)
   const [recordKind, setRecordKind] = useState<IdentityRecordCategory>('terms_of_reference')
   const [busy, setBusy] = useState(false)
+  const [authorityPolicy, setAuthorityPolicy] = useState<AuthorityScopePolicyStatus | null>(null)
 
   const refresh = useCallback(async (preferredId?: string) => {
     const rows = await invoke<ProfessionalIdentitySummary[]>('identity_list')
@@ -127,6 +137,13 @@ export function ProfessionalIdentitySettings({ onClose, onSaved }: Props) {
       .then(setForm)
       .catch(error => toast.error(message(error)))
   }, [selectedId, selectedVersion])
+
+  useEffect(() => {
+    if (!selectedId || !selectedVersion) { setAuthorityPolicy(null); return }
+    void invoke<AuthorityScopePolicyStatus>('authority_scope_policy_get', {
+      identityId: selectedId, versionHash: selectedVersion,
+    }).then(setAuthorityPolicy).catch(error => toast.error(message(error)))
+  }, [selectedId, selectedVersion, form.authority_constraints?.length])
 
   const run = async (operation: () => Promise<void>) => {
     setBusy(true)
@@ -181,6 +198,17 @@ export function ProfessionalIdentitySettings({ onClose, onSaved }: Props) {
 
   const selected = identities.find(identity => identity.id === selectedId) ?? null
 
+  const activateAuthorityWarnings = () => run(async () => {
+    if (!selectedId || !selectedVersion) return
+    const confirmation = window.prompt('Type ACTIVATE AUTHORITY WARNINGS to enable advisory warnings for this exact immutable identity version.')
+    if (confirmation === null) return
+    const status = await invoke<AuthorityScopePolicyStatus>('authority_scope_policy_activate', {
+      identityId: selectedId, versionHash: selectedVersion, confirmation,
+    })
+    setAuthorityPolicy(status)
+    toast.success('Authority warnings activated for this identity version.')
+  })
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-slate-950 text-slate-100">
       <header className="flex shrink-0 items-start gap-3 border-b border-white/10 px-5 py-4">
@@ -210,6 +238,27 @@ export function ProfessionalIdentitySettings({ onClose, onSaved }: Props) {
               </select>
             )}
           </div>
+        )}
+
+        {selectedId && selectedVersion && authorityPolicy && (
+          <section className="mb-5 rounded-lg border border-amber-400/20 bg-slate-900/60 p-4">
+            <div className="flex items-start gap-3">
+              <div className="mr-auto">
+                <h3 className="text-sm font-semibold text-amber-100">Authority-scope warnings</h3>
+                {!authorityPolicy.configured ? (
+                  <p className="mt-1 text-xs text-slate-400">Not configured for this identity version.</p>
+                ) : authorityPolicy.mode === 'offline' ? (
+                  <p className="mt-1 text-xs text-slate-400">Offline evaluation only. Results are withheld from Live Assist while you validate the rules.</p>
+                ) : (
+                  <p className="mt-1 text-xs text-slate-400">Advisory display active for this exact version. A clean result only means no enrolled rule matched.</p>
+                )}
+                {authorityPolicy.totalDismissals > 0 && <p className="mt-1 text-[10px] text-slate-500">Repeated-warning feedback: {authorityPolicy.totalDismissals} dismissal{authorityPolicy.totalDismissals === 1 ? '' : 's'}.</p>}
+              </div>
+              {authorityPolicy.configured && authorityPolicy.mode === 'offline' && (
+                <button type="button" disabled={busy} onClick={activateAuthorityWarnings} className="rounded-md border border-amber-300/30 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:bg-amber-300/10 disabled:opacity-40">Activate advisory warnings</button>
+              )}
+            </div>
+          </section>
         )}
 
         <section className="mb-5 rounded-lg border border-white/10 bg-slate-900/60 p-4">

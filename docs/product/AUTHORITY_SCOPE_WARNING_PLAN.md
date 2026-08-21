@@ -1,6 +1,6 @@
 # Authority-Scope Warning Implementation Plan
 
-Status: Checkpoints A and B complete; Checkpoint C remains unauthorised pending explicit approval
+Status: Checkpoints A, B, and C implemented; final release/manual verification remains
 Date: 2026-08-21
 Design: `AUTHORITY_SCOPE_WARNING_DESIGN.md`
 
@@ -330,6 +330,11 @@ no human-expected positive case; sensitivity remains covered synthetically rathe
 by this private batch. Runtime activation remained false.
 
 ## 6. Checkpoint C — production advisory path, separately authorised
+
+Implementation note (2026-08-22): Ghassan explicitly approved this checkpoint. The
+version-bound policy tables, post-completion diagnostics, exact-exchange dismissal and evidence
+commands, honest three-state UI, and focused persistence/presentation tests are implemented.
+Warnings remain advisory, local, and opt-in per immutable identity-version hash.
 
 Do not begin this checkpoint merely because A and B pass. It requires a new explicit user go
 signal after the five-trial report.

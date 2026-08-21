@@ -1,6 +1,6 @@
 # Meeting Assistant current status and roadmap
 
-Updated: 2026-08-21
+Updated: 2026-08-22
 
 Authoritative implementation worktree: `C:\Users\ghass\.codex\worktrees\0db3\Meeting-Assistant`
 
@@ -28,17 +28,21 @@ This file is the concise operational view of what is done and what comes next. P
 - Added `professional-introduction/v1` routing for common self-introduction/background phrasings, deterministic CV-first evidence ordering, source provenance, a 7,000-character evidence budget, and a 1,200-character per-record cap that omits content rather than cutting a claim mid-sentence. Contested facts are suppressed from the broad brief; specific lexical questions retain the existing fail-closed conflict error.
 - Tightened the plain-text boundary: matching outer emphasis wrappers are removed immediately from the streamed display and normalized at completion with a recorded warning; inline emphasis and code Markdown remain invalid.
 - Verified the change with 20 focused Professional Identity tests, 18 focused Live Assist tests, three focused streaming-display tests, the full Rust and frontend suites, TypeScript typechecking, and a production release rebuild.
+- Added identity schema v2 authority constraints and a pure local scope-expansion matcher derived from explicit Role and authority boundaries. The matcher is closed-world: no match never claims factual verification.
+- Completed five private offline authority trials without tracking answer text. All five accepted answers remained true negatives; the private gate reported zero false positives and zero false negatives for the enrolled rules.
+- Implemented the approved advisory path with policy state pinned to the exact immutable identity-version hash. New constrained versions default to offline evaluation and require the typed confirmation `ACTIVATE AUTHORITY WARNINGS` before Live Assist can display results.
+- Added post-completion, local-only authority diagnostics separate from format warnings; amber excluded-object highlighting; exchange-local dismissal with aggregate counters; and source metadata with excerpts revealed only on demand. Answers, sentences, aliases, and excerpts are never persisted by the policy tables.
 
 ## Current finding
 
-The active imported context contains the broader career evidence. The narrow-answer defect was in production retrieval: `Tell us about yourself` had little literal overlap with career records. That canonical path now bypasses lexical ranking and supplies a governed career brief. The remaining product question is answer quality on the private corpus and configured providers, not whether the model received the broader evidence.
+Broad professional-introduction composition now works against the active context. The five observed answers preserved the important quantitative and authority qualifiers. The authority-warning engine is intentionally narrower: it detects only claims covered by explicitly enrolled rules and remains an advisory review aid, not a factuality certificate.
 
 ## Next
 
-1. **Verify without leaking private data.** Run the ignored real-corpus workload and a manual `Tell us about yourself` request against the configured provider. Store no private answer text in tracked files.
-2. **Assess the brief, not the provider.** Confirm the grounding-source list spans the expected CV/career sections and that the response covers progression, current strengths, and role relevance without invented transitions.
+1. **Manually verify advisory display.** Activate warnings for the tested identity version, run one synthetic positive claim and one accepted negative claim, then confirm amber span highlighting, honest clean-state copy, exchange-local dismissal, and evidence-on-demand.
+2. **Keep learning from dismissals.** Review aggregate dismissal counts after real use. Change rules only through a new immutable identity version; never turn a dismissal into persisted suppression.
 3. **Extend compose profiles only from observed misses.** Add a separate governed brief for suitability or career-arc questions only if real trials show that the professional-introduction contract cannot serve them.
-4. **Run the use loop.** Freeze provider, identity version, lens/depth, and compose profile; run a mock interview and then five real meeting/interview trials. Record question, word count, used/not used, answer fit, continuity correctness, and one-line missing-context notes.
+4. **Run the use loop.** Freeze provider, identity version, lens/depth, and compose profile; run a mock interview and then five real meeting/interview trials. Record question, word count, used/not used, answer fit, continuity correctness, warning usefulness, and one-line missing-context notes.
 
 ## Later
 
@@ -56,3 +60,4 @@ The active imported context contains the broader career evidence. The narrow-ans
 - Only a matching outer emphasis wrapper is normalized. Inline emphasis and code Markdown are still rejected so structurally unsafe provider output fails visibly.
 - Full production Project Context architecture is not yet implemented.
 - The semantic judge is not a runtime safety oracle; Ghassan remains the final live-use gate.
+- Authority warnings are not comprehensive verification. Only explicitly enrolled verb/object/context combinations can match, and advisory activation is version-specific.

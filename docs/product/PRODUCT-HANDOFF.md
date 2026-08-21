@@ -73,7 +73,7 @@ Extend Meetily with the following capabilities without removing its existing fea
 - Model output receives no filesystem, network, shell, or application tools.
 - Verify downloaded/imported model artifacts by exact manifest and cryptographic digest before activation.
 
-## Current delivery status — 2026-08-21
+## Current delivery status — 2026-08-22
 
 The working Meetily baseline, F8/F9 Live Assist capture, Interview lens, production Markdown context import bridge, DeepSeek/Kimi provider adapters, offline evaluation lifecycle, and Windows Provider Settings UI are implemented and locally committed. Provider Settings supports presets and custom OpenAI-compatible endpoints, secure Windows credential storage, bounded connection testing, explicit activation, safe replacement/removal, and active-provider display. OpenAI remains intentionally unconfigured until Ghassan supplies a key later.
 
@@ -85,6 +85,14 @@ The former dirty implementation tree has been separated into eight coherent loca
 2. reject or safely normalize inline Markdown and preserve shared-authority qualifiers;
 3. verify the change with provider fixtures and the private imported corpus without tracking private answers; and
 4. run a mock interview followed by the real five-use learning loop.
+
+Broad professional introductions, streaming plain-text normalization, and the authority-scope
+warning safeguards are now implemented. Authority rules are explicit identity-version data; new
+constrained versions evaluate offline by default, and advisory display requires typed activation
+for that exact immutable hash. Runtime matching happens locally only after answer completion.
+Warnings are non-blocking, highlight only the matched excluded-object span, can be dismissed only
+for the current exchange, and expose evidence excerpts only after a separate user action. A clean
+indicator means only that no enrolled rule matched.
 
 Detailed completion state and roadmap are maintained in [CURRENT_STATUS_AND_ROADMAP.md](CURRENT_STATUS_AND_ROADMAP.md).
 

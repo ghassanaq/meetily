@@ -23,6 +23,10 @@ use crate::audio::transcription::engine::{
 };
 use crate::database::repositories::expert_profile::ExpertProfilesRepository;
 use crate::expert_profiles::ExpertProfileVersion;
+use crate::professional_identity::authority_scope::evaluate_authority_scope;
+use crate::professional_identity::authority_scope_repository::{
+    AuthorityScopePolicyMode, AuthorityScopeRepository,
+};
 use crate::professional_identity::repository::ProfessionalIdentityRepository;
 use crate::professional_identity::{retrieve_identity_context, RetrievedIdentityContext};
 use crate::state::AppState;
@@ -506,6 +510,9 @@ impl LiveAssistState {
             answer: String::new(),
             answer_word_count: None,
             answer_format_warnings: Vec::new(),
+            authority_check: None,
+            authority_policy_mode: None,
+            dismissed_authority_rule_ids: Vec::new(),
             detail: String::new(),
             detail_status: None,
             detail_truncated: false,
@@ -770,6 +777,23 @@ impl LiveAssistState {
             .flatten();
         let selected_profile = inner.selected_profile.clone();
         let selected_identity = inner.selected_identity.clone();
+        let mut exchanges = inner.exchanges.clone();
+        for exchange in &mut exchanges {
+            if exchange.authority_policy_mode != Some(AuthorityScopePolicyMode::Advisory) {
+                exchange.authority_check = None;
+                continue;
+            }
+            if let Some(check) = &mut exchange.authority_check {
+                check.warnings.retain(|warning| {
+                    !exchange
+                        .dismissed_authority_rule_ids
+                        .contains(&warning.rule_id)
+                });
+                if check.warnings.is_empty() && !exchange.dismissed_authority_rule_ids.is_empty() {
+                    exchange.authority_check = None;
+                }
+            }
+        }
         AssistSnapshot {
             armed,
             receiving,
@@ -802,7 +826,7 @@ impl LiveAssistState {
             capturing: inner.active_capture.is_some(),
             context_generation: inner.context_generation,
             stall_count: inner.stall_count,
-            exchanges: inner.exchanges.clone(),
+            exchanges,
             capture_shortcut: CAPTURE_SHORTCUT.to_string(),
             follow_up_shortcut: FOLLOW_UP_SHORTCUT.to_string(),
         }
@@ -918,6 +942,140 @@ pub fn deactivate<R: Runtime>(app: &AppHandle<R>, state: &LiveAssistState) -> Re
 #[tauri::command]
 pub fn assist_get_snapshot(state: tauri::State<'_, LiveAssistState>) -> AssistSnapshot {
     state.snapshot()
+}
+
+#[tauri::command]
+pub async fn assist_dismiss_authority_warning(
+    app_state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, LiveAssistState>,
+    exchange_id: Uuid,
+    rule_id: String,
+) -> Result<AssistSnapshot, String> {
+    let (identity_id, version_hash, generation_id) = {
+        let inner = state.lock();
+        if inner.current_exchange_id != Some(exchange_id) {
+            return Err(
+                "Authority warnings can only be dismissed on the current exchange".to_string(),
+            );
+        }
+        let exchange = inner
+            .exchanges
+            .iter()
+            .find(|item| item.id == exchange_id)
+            .ok_or_else(|| "Live Assist exchange was not found".to_string())?;
+        if exchange.status != AssistExchangeStatus::Complete
+            || exchange.authority_policy_mode != Some(AuthorityScopePolicyMode::Advisory)
+            || !exchange.authority_check.as_ref().is_some_and(|check| {
+                check
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.rule_id == rule_id)
+            })
+        {
+            return Err(
+                "The requested warning is not active on this completed exchange".to_string(),
+            );
+        }
+        let identity_id = exchange
+            .identity_id
+            .ok_or_else(|| "The exchange has no identity version".to_string())?;
+        let version_hash = exchange
+            .identity_version_hash
+            .clone()
+            .ok_or_else(|| "The exchange has no identity version".to_string())?;
+        (identity_id, version_hash, exchange.generation_id)
+    };
+    AuthorityScopeRepository::record_dismissal(
+        app_state.db_manager.pool(),
+        identity_id,
+        &version_hash,
+        &rule_id,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    {
+        let mut inner = state.lock();
+        if inner.current_exchange_id != Some(exchange_id) {
+            return Err("The current exchange changed before dismissal completed".to_string());
+        }
+        let exchange =
+            find_exchange_mut(&mut inner, exchange_id).map_err(|error| error.to_string())?;
+        if exchange.generation_id != generation_id
+            || exchange.status != AssistExchangeStatus::Complete
+        {
+            return Err("The exchange changed before dismissal completed".to_string());
+        }
+        if !exchange.dismissed_authority_rule_ids.contains(&rule_id) {
+            exchange.dismissed_authority_rule_ids.push(rule_id);
+        }
+    }
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
+pub async fn assist_inspect_authority_evidence(
+    app_state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, LiveAssistState>,
+    exchange_id: Uuid,
+    rule_id: String,
+    include_excerpt: bool,
+) -> Result<Vec<AuthorityEvidenceItem>, String> {
+    let (identity_id, version_hash, evidence_ids) = {
+        let inner = state.lock();
+        if inner.current_exchange_id != Some(exchange_id) {
+            return Err("Evidence can only be inspected for the current exchange".to_string());
+        }
+        let exchange = inner
+            .exchanges
+            .iter()
+            .find(|item| item.id == exchange_id)
+            .ok_or_else(|| "Live Assist exchange was not found".to_string())?;
+        let warning = exchange
+            .authority_check
+            .as_ref()
+            .and_then(|check| {
+                check
+                    .warnings
+                    .iter()
+                    .find(|warning| warning.rule_id == rule_id)
+            })
+            .ok_or_else(|| "The requested warning is not attached to this exchange".to_string())?;
+        (
+            exchange
+                .identity_id
+                .ok_or_else(|| "The exchange has no identity version".to_string())?,
+            exchange
+                .identity_version_hash
+                .clone()
+                .ok_or_else(|| "The exchange has no identity version".to_string())?,
+            warning.evidence_record_ids.clone(),
+        )
+    };
+    let identity = ProfessionalIdentityRepository::get(
+        app_state.db_manager.pool(),
+        identity_id,
+        &version_hash,
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "The identity version was not found".to_string())?;
+    Ok(evidence_ids
+        .into_iter()
+        .filter_map(|record_id| {
+            identity
+                .records
+                .iter()
+                .find(|record| record.id == record_id)
+                .map(|record| AuthorityEvidenceItem {
+                    record_id,
+                    title: record.title.clone(),
+                    label: record.source.label.clone(),
+                    revision: record.source.revision.clone(),
+                    updated_at: record.updated_at.clone(),
+                    excerpt: include_excerpt.then(|| record.content.clone()),
+                })
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -1300,7 +1458,22 @@ async fn process_exchange<R: Runtime>(
 
     let answer_contract = AnswerContract::from_profile_selection(profile.is_some());
     let profile_context = load_profile_context(&app, profile).await?;
-    let identity_context = load_identity_context(&app, identity, &question).await?;
+    let identity_context = load_identity_context(&app, identity.clone(), &question).await?;
+    let authority_policy_mode = if let Some((identity_id, version_hash)) = identity.as_ref() {
+        let app_state = app.state::<AppState>();
+        Some(
+            AuthorityScopeRepository::status(
+                app_state.db_manager.pool(),
+                *identity_id,
+                version_hash,
+                !identity_context.authority_constraints.is_empty(),
+            )
+            .await?
+            .mode,
+        )
+    } else {
+        Some(AuthorityScopePolicyMode::Advisory)
+    };
     {
         let state = app.state::<LiveAssistState>();
         let mut inner = state.lock();
@@ -1311,6 +1484,7 @@ async fn process_exchange<R: Runtime>(
             return Ok(());
         }
         exchange.grounding_sources = identity_context.sources.clone();
+        exchange.authority_policy_mode = authority_policy_mode;
     }
     let messages = build_answer_messages(
         &question,
@@ -1359,6 +1533,10 @@ async fn process_exchange<R: Runtime>(
         exchange.answer = validation.normalized_answer;
         exchange.answer_word_count = Some(validation.word_count);
         exchange.answer_format_warnings = validation.format_warnings;
+        exchange.authority_check = Some(evaluate_authority_scope(
+            &exchange.answer,
+            &identity_context.authority_constraints,
+        ));
         for warning in &exchange.answer_format_warnings {
             log::warn!(
                 "Live Assist exchange {exchange_id} completed with format warning: {warning}"
@@ -1483,6 +1661,7 @@ async fn load_identity_context<R: Runtime>(
             })
             .to_string(),
             sources: Vec::new(),
+            authority_constraints: Vec::new(),
         });
     };
     let app_state = app.state::<AppState>();
@@ -1853,6 +2032,9 @@ mod tests {
             answer: "The current target is Friday.".to_string(),
             answer_word_count: None,
             answer_format_warnings: Vec::new(),
+            authority_check: None,
+            authority_policy_mode: None,
+            dismissed_authority_rule_ids: Vec::new(),
             detail: String::new(),
             detail_status: None,
             detail_truncated: false,

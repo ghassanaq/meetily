@@ -6,6 +6,7 @@
 //! never relies on model-authored provenance.
 
 pub(crate) mod authority_scope;
+pub mod authority_scope_repository;
 pub mod commands;
 mod composition;
 pub mod markdown_import;
@@ -150,6 +151,7 @@ pub struct GroundingSource {
 pub struct RetrievedIdentityContext {
     pub prompt_json: String,
     pub sources: Vec<GroundingSource>,
+    pub authority_constraints: Vec<AuthorityConstraint>,
 }
 
 #[derive(Serialize)]
@@ -615,6 +617,7 @@ pub fn retrieve_identity_context(
     Ok(RetrievedIdentityContext {
         prompt_json,
         sources,
+        authority_constraints: profile.authority_constraints.clone(),
     })
 }
 
