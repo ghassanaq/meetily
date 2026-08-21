@@ -1,6 +1,7 @@
 mod capture;
 mod models;
 mod provider;
+pub(crate) mod provider_settings;
 #[cfg(test)]
 mod voice_harness;
 
@@ -28,6 +29,7 @@ use crate::state::AppState;
 
 use capture::{AssistAudioStream, CaptureBuffer, CaptureMarker, CapturedClip};
 use provider::{stream_chat, AssistMessage, AssistProviderConfig};
+use provider_settings::ActiveProviderDescriptor;
 
 pub const CAPTURE_SHORTCUT: &str = "F8";
 pub const FOLLOW_UP_SHORTCUT: &str = "F9";
@@ -343,6 +345,8 @@ pub struct LiveAssistState {
     inner: Mutex<LiveAssistInner>,
     buffer: Arc<Mutex<CaptureBuffer>>,
     client: Client,
+    active_provider: Mutex<Option<ActiveProviderDescriptor>>,
+    has_managed_providers: Mutex<bool>,
 }
 
 impl Default for LiveAssistState {
@@ -355,11 +359,42 @@ impl Default for LiveAssistState {
                 .timeout(Duration::from_secs(90))
                 .build()
                 .expect("Live Assist HTTP client configuration must be valid"),
+            active_provider: Mutex::new(None),
+            has_managed_providers: Mutex::new(false),
         }
     }
 }
 
 impl LiveAssistState {
+    pub(crate) fn set_managed_provider_state(
+        &self,
+        has_managed_providers: bool,
+        provider: Option<ActiveProviderDescriptor>,
+    ) {
+        *self
+            .has_managed_providers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = has_managed_providers;
+        *self
+            .active_provider
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = provider;
+    }
+
+    fn has_managed_providers(&self) -> bool {
+        *self
+            .has_managed_providers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn active_provider(&self) -> Option<ActiveProviderDescriptor> {
+        self.active_provider
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     async fn arm<R: Runtime>(&self, app: &AppHandle<R>) -> Result<()> {
         let has_stream_error = self
             .buffer
@@ -697,7 +732,12 @@ impl LiveAssistState {
             inner.stall_count = inner.stall_count.saturating_add(1);
         }
         inner.last_stream_error.clone_from(&stream_error);
-        let provider = AssistProviderConfig::from_environment().ok();
+        let active_provider = self.active_provider();
+        let environment_provider = (!self.has_managed_providers() && active_provider.is_none())
+            .then(AssistProviderConfig::from_environment)
+            .transpose()
+            .ok()
+            .flatten();
         let selected_profile = inner.selected_profile.clone();
         let selected_identity = inner.selected_identity.clone();
         AssistSnapshot {
@@ -706,11 +746,18 @@ impl LiveAssistState {
             stalled,
             level_rms,
             cloud_enabled: inner.cloud_enabled,
-            provider_configured: provider.is_some(),
-            provider_name: provider
+            provider_configured: active_provider.is_some() || environment_provider.is_some(),
+            provider_name: active_provider
                 .as_ref()
-                .map(|config| provider_label(&config.endpoint)),
-            model_name: provider.map(|config| config.model),
+                .map(|provider| provider.display_name.clone())
+                .or_else(|| {
+                    environment_provider
+                        .as_ref()
+                        .map(|config| provider_label(&config.endpoint))
+                }),
+            model_name: active_provider
+                .map(|provider| provider.model)
+                .or_else(|| environment_provider.map(|config| config.model)),
             stream_error,
             selected_profile_id: selected_profile.as_ref().map(|item| item.profile_id),
             selected_profile_version_hash: selected_profile
@@ -1242,7 +1289,7 @@ async fn process_exchange<R: Runtime>(
         &identity_context.prompt_json,
         answer_contract,
     );
-    let config = AssistProviderConfig::from_environment()?;
+    let config = load_provider_config(&app).await?;
     let request_started = Instant::now();
     let state = app.state::<LiveAssistState>();
     let client = state.client.clone();
@@ -1317,7 +1364,7 @@ async fn process_detail<R: Runtime>(
     let identity_context = load_identity_context(&app, identity, &exchange.question).await?;
     let messages =
         build_detail_messages(&exchange, &profile_context, &identity_context.prompt_json);
-    let config = AssistProviderConfig::from_environment()?;
+    let config = load_provider_config(&app).await?;
     let state = app.state::<LiveAssistState>();
     let client = state.client.clone();
     let completion = stream_chat(&client, &config, &messages, 700, cancellation, {
@@ -1418,6 +1465,20 @@ async fn load_identity_context<R: Runtime>(
     .await?
     .ok_or_else(|| anyhow!("selected Professional Identity version was not found"))?;
     retrieve_identity_context(&identity, question, Utc::now())
+}
+
+async fn load_provider_config<R: Runtime>(app: &AppHandle<R>) -> Result<AssistProviderConfig> {
+    let live_state = app.state::<LiveAssistState>();
+    if let Some(provider) = live_state.active_provider() {
+        let app_state = app.state::<AppState>();
+        return provider_settings::load_active_config(app_state.db_manager.pool(), &provider).await;
+    }
+    if live_state.has_managed_providers() {
+        return Err(anyhow!(
+            "No tested Live Assist provider is active. Activate one in Settings → Providers."
+        ));
+    }
+    AssistProviderConfig::from_environment()
 }
 
 async fn validate_profile_selection(
@@ -1724,6 +1785,29 @@ mod tests {
         assert_ne!(CAPTURE_SHORTCUT, FOLLOW_UP_SHORTCUT);
         assert!(!CAPTURE_SHORTCUT.contains('+'));
         assert!(!FOLLOW_UP_SHORTCUT.contains('+'));
+    }
+
+    #[test]
+    fn managed_provider_state_never_silently_falls_back_to_environment() {
+        let state = LiveAssistState::default();
+        state.set_managed_provider_state(true, None);
+        let inactive = state.snapshot();
+        assert!(!inactive.provider_configured);
+        assert!(inactive.provider_name.is_none());
+
+        state.set_managed_provider_state(
+            true,
+            Some(ActiveProviderDescriptor {
+                id: Uuid::new_v4().to_string(),
+                display_name: "My provider".to_string(),
+                endpoint: "https://api.example.com/v1/chat/completions".to_string(),
+                model: "example-model".to_string(),
+            }),
+        );
+        let active = state.snapshot();
+        assert!(active.provider_configured);
+        assert_eq!(active.provider_name.as_deref(), Some("My provider"));
+        assert_eq!(active.model_name.as_deref(), Some("example-model"));
     }
 
     fn exchange(id: Uuid, generation: u64, data_class: AssistDataClass) -> AssistExchange {

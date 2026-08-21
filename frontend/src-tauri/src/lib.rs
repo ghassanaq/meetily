@@ -555,6 +555,17 @@ pub fn run() {
             })
             .expect("Failed to initialize database");
 
+            if let Some(app_state) = _app.try_state::<state::AppState>() {
+                let live_state = _app.state::<live_assist::LiveAssistState>();
+                tauri::async_runtime::block_on(
+                    live_assist::provider_settings::hydrate_runtime_provider(
+                        app_state.db_manager.pool(),
+                        &live_state,
+                    ),
+                )
+                .expect("Failed to initialize Live Assist provider settings");
+            }
+
             // Initialize bundled templates directory for dynamic template discovery
             log::info!("Initializing bundled templates directory...");
             if let Ok(resource_path) = _app.handle().path().resource_dir() {
@@ -785,6 +796,11 @@ pub fn run() {
             live_assist::assist_discard_capture,
             live_assist::assist_restart_capture,
             live_assist::assist_request_detail,
+            live_assist::provider_settings::live_assist_provider_list,
+            live_assist::provider_settings::live_assist_provider_save,
+            live_assist::provider_settings::live_assist_provider_test,
+            live_assist::provider_settings::live_assist_provider_activate,
+            live_assist::provider_settings::live_assist_provider_delete,
             // Template commands
             summary::template_commands::api_list_templates,
             summary::template_commands::api_get_template_details,
