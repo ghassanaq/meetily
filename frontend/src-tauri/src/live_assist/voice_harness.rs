@@ -17,8 +17,8 @@ use uuid::Uuid;
 use super::*;
 use crate::expert_profiles::{hash_profile_version, presets::interview_profile};
 use crate::professional_identity::{
-    hash_identity_version, retrieve_identity_context, validate_identity, IdentityRecord,
-    IdentityRecordCategory, IdentitySource, ProfessionalIdentityHeader,
+    hash_identity_version, markdown_import::load_context_manifest, retrieve_identity_context,
+    IdentityRecord, IdentityRecordCategory, IdentitySource, ProfessionalIdentityHeader,
     ProfessionalIdentityVersion, PROFESSIONAL_IDENTITY_SCHEMA_VERSION,
 };
 
@@ -77,47 +77,6 @@ struct PrivateHarnessFixture {
     requires_single_story_source: bool,
     #[serde(default)]
     required_retrieved_titles: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ContextManifest {
-    schema_version: u32,
-    context_id: String,
-    name: String,
-    identity_bundle: String,
-    role_bundle: String,
-    project_bundles: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BundleManifest {
-    schema_version: u32,
-    bundle_id: String,
-    name: String,
-    sources: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DocumentMetadata {
-    schema_version: u32,
-    document_id: String,
-    source: String,
-    revision: String,
-    updated_at: String,
-    valid_until: Option<String>,
-    conflict_key: Option<String>,
-    #[serde(default)]
-    tags: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum PrivateBundleScope {
-    Person,
-    Role,
-    Project,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -470,43 +429,7 @@ fn load_private_harness_fixtures(path: &Path) -> Result<Vec<UnsupportedExperienc
     }
 
     let manifest_path = resolve_private_path(&root, &root, &workload.context_manifest)?;
-    let manifest: ContextManifest = parse_json_file(&manifest_path)?;
-    if manifest.schema_version != 1 {
-        bail!(
-            "unsupported private context schema version {}",
-            manifest.schema_version
-        );
-    }
-    if manifest.context_id.trim().is_empty() || manifest.name.trim().is_empty() {
-        bail!("private context manifest must name its context");
-    }
-
-    let mut records = Vec::new();
-    records.extend(load_private_bundle(
-        &root,
-        &manifest.identity_bundle,
-        PrivateBundleScope::Person,
-    )?);
-    records.extend(load_private_bundle(
-        &root,
-        &manifest.role_bundle,
-        PrivateBundleScope::Role,
-    )?);
-    for bundle in &manifest.project_bundles {
-        records.extend(load_private_bundle(
-            &root,
-            bundle,
-            PrivateBundleScope::Project,
-        )?);
-    }
-
-    let identity = ProfessionalIdentityVersion {
-        schema_version: PROFESSIONAL_IDENTITY_SCHEMA_VERSION,
-        identity: workload.identity_header,
-        records,
-        projects: Vec::new(),
-    };
-    validate_identity(&identity)?;
+    let identity = load_context_manifest(&manifest_path, Some(workload.identity_header))?.identity;
 
     workload
         .fixtures
@@ -538,160 +461,6 @@ fn load_private_harness_fixtures(path: &Path) -> Result<Vec<UnsupportedExperienc
             })
         })
         .collect()
-}
-
-fn load_private_bundle(
-    root: &Path,
-    bundle_relative_path: &str,
-    scope: PrivateBundleScope,
-) -> Result<Vec<IdentityRecord>> {
-    let bundle_path = resolve_private_path(root, root, bundle_relative_path)?;
-    let bundle: BundleManifest = parse_json_file(&bundle_path)?;
-    if bundle.schema_version != 1 {
-        bail!(
-            "unsupported private bundle schema version {} in '{}'",
-            bundle.schema_version,
-            bundle_path.display()
-        );
-    }
-    if bundle.bundle_id.trim().is_empty()
-        || bundle.name.trim().is_empty()
-        || bundle.sources.is_empty()
-    {
-        bail!("private bundle must have an id, name, and Markdown sources");
-    }
-    let bundle_directory = bundle_path
-        .parent()
-        .ok_or_else(|| anyhow!("private bundle path has no parent"))?;
-    let mut records = Vec::new();
-    for source in &bundle.sources {
-        let source_path = resolve_private_path(root, bundle_directory, source)?;
-        if source_path.extension().and_then(|value| value.to_str()) != Some("md") {
-            bail!(
-                "private bundle source '{}' is not Markdown",
-                source_path.display()
-            );
-        }
-        records.extend(parse_private_markdown(&source_path, scope)?);
-    }
-    Ok(records)
-}
-
-fn parse_private_markdown(path: &Path, scope: PrivateBundleScope) -> Result<Vec<IdentityRecord>> {
-    let normalized = fs::read_to_string(path)
-        .with_context(|| format!("failed to read private source '{}'", path.display()))?
-        .replace("\r\n", "\n");
-    let rest = normalized
-        .strip_prefix("---\n")
-        .ok_or_else(|| anyhow!("private Markdown source must start with YAML frontmatter"))?;
-    let frontmatter_end = rest
-        .find("\n---\n")
-        .ok_or_else(|| anyhow!("private Markdown source has unterminated YAML frontmatter"))?;
-    let metadata: DocumentMetadata = serde_yaml_ng::from_str(&rest[..frontmatter_end])
-        .context("invalid private Markdown frontmatter")?;
-    if metadata.schema_version != 1
-        || metadata.document_id.trim().is_empty()
-        || metadata.source.trim().is_empty()
-        || metadata.revision.trim().is_empty()
-    {
-        bail!("private Markdown metadata is incomplete or unsupported");
-    }
-    let body = &rest[frontmatter_end + "\n---\n".len()..];
-    let mut breadcrumb = Vec::<String>::new();
-    let mut current_heading = metadata.source.clone();
-    let mut current_lines = Vec::<String>::new();
-    let mut sections = Vec::<(String, String)>::new();
-
-    for line in body.lines() {
-        if let Some((level, title)) = private_markdown_heading(line) {
-            push_private_section(&mut sections, &current_heading, &mut current_lines);
-            breadcrumb.truncate(level.saturating_sub(1));
-            breadcrumb.push(title.to_string());
-            current_heading = breadcrumb.join(" > ");
-        } else {
-            current_lines.push(line.to_string());
-        }
-    }
-    push_private_section(&mut sections, &current_heading, &mut current_lines);
-    if sections.is_empty() {
-        bail!(
-            "private Markdown source '{}' has no content",
-            path.display()
-        );
-    }
-
-    sections
-        .into_iter()
-        .enumerate()
-        .map(|(index, (title, content))| {
-            let category = private_record_category(scope, path);
-            let id = stable_private_record_id(&format!(
-                "{}\n{}\n{}",
-                metadata.document_id, title, index
-            ));
-            Ok(IdentityRecord {
-                id,
-                category,
-                title,
-                content,
-                source: IdentitySource {
-                    label: metadata.source.clone(),
-                    revision: metadata.revision.clone(),
-                },
-                updated_at: metadata.updated_at.clone(),
-                valid_until: metadata.valid_until.clone(),
-                conflict_key: metadata.conflict_key.clone(),
-                tags: metadata.tags.clone(),
-            })
-        })
-        .collect()
-}
-
-fn push_private_section(
-    sections: &mut Vec<(String, String)>,
-    heading: &str,
-    lines: &mut Vec<String>,
-) {
-    let content = lines.join("\n").trim().to_string();
-    lines.clear();
-    if !content.is_empty() {
-        sections.push((heading.to_string(), content));
-    }
-}
-
-fn private_markdown_heading(line: &str) -> Option<(usize, &str)> {
-    let hashes = line
-        .chars()
-        .take_while(|character| *character == '#')
-        .count();
-    if !(1..=3).contains(&hashes) {
-        return None;
-    }
-    let title = line.get(hashes..)?.strip_prefix(' ')?.trim();
-    (!title.is_empty()).then_some((hashes, title))
-}
-
-fn private_record_category(scope: PrivateBundleScope, path: &Path) -> IdentityRecordCategory {
-    match scope {
-        PrivateBundleScope::Role => IdentityRecordCategory::TermsOfReference,
-        PrivateBundleScope::Project => IdentityRecordCategory::Other,
-        PrivateBundleScope::Person => match path.file_name().and_then(|value| value.to_str()) {
-            Some(name) if name.contains("capability") || name.contains("authority") => {
-                IdentityRecordCategory::Authority
-            }
-            Some(name) if name.contains("cv") => IdentityRecordCategory::Cv,
-            _ => IdentityRecordCategory::Other,
-        },
-    }
-}
-
-fn stable_private_record_id(seed: &str) -> Uuid {
-    let digest = Sha256::digest(seed.as_bytes());
-    let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x50;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Uuid::from_bytes(bytes)
 }
 
 fn parse_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {

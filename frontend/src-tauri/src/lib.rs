@@ -759,6 +759,7 @@ pub fn run() {
             // Versioned professional identity data (CV, TORs, projects, and sources)
             professional_identity::commands::identity_create,
             professional_identity::commands::identity_create_version,
+            professional_identity::commands::identity_import_context_manifest,
             professional_identity::commands::identity_list,
             professional_identity::commands::identity_list_versions,
             professional_identity::commands::identity_get,

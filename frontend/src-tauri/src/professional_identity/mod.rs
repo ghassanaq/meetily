@@ -6,6 +6,7 @@
 //! never relies on model-authored provenance.
 
 pub mod commands;
+pub mod markdown_import;
 pub mod repository;
 
 use std::collections::HashSet;

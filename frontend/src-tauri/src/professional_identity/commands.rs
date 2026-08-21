@@ -1,8 +1,12 @@
 use serde::Serialize;
+use std::path::PathBuf;
+use tauri::AppHandle;
+use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 use crate::state::AppState;
 
+use super::markdown_import::{load_context_manifest, stable_context_identity_id};
 use super::repository::{
     ProfessionalIdentityRepository, ProfessionalIdentityRepositoryError,
     ProfessionalIdentitySummary, StoredProfessionalIdentityVersion,
@@ -39,6 +43,15 @@ fn parse_error(error: anyhow::Error) -> IdentityCommandError {
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct ImportedProfessionalIdentity {
+    #[serde(flatten)]
+    pub stored: StoredProfessionalIdentityVersion,
+    pub display_name: String,
+    pub context_name: String,
+    pub record_count: usize,
+}
+
 #[tauri::command]
 pub async fn identity_create(
     state: tauri::State<'_, AppState>,
@@ -64,6 +77,53 @@ pub async fn identity_create_version(
         &content,
     )
     .await?)
+}
+
+#[tauri::command]
+pub async fn identity_import_context_manifest(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<ImportedProfessionalIdentity>, IdentityCommandError> {
+    let selected = app
+        .dialog()
+        .file()
+        .add_filter("Meeting Assistant context", &["json"])
+        .blocking_pick_file();
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+
+    let imported =
+        load_context_manifest(&PathBuf::from(selected.to_string()), None).map_err(parse_error)?;
+    let identity_id = stable_context_identity_id(&imported.context_id);
+    let existing = ProfessionalIdentityRepository::list(state.db_manager.pool())
+        .await?
+        .into_iter()
+        .any(|summary| summary.id == identity_id.to_string());
+    let stored = if existing {
+        let stored = ProfessionalIdentityRepository::create_version(
+            state.db_manager.pool(),
+            identity_id,
+            &imported.identity,
+        )
+        .await?;
+        ProfessionalIdentityRepository::restore(state.db_manager.pool(), identity_id).await?;
+        stored
+    } else {
+        ProfessionalIdentityRepository::create(
+            state.db_manager.pool(),
+            identity_id,
+            &imported.identity,
+        )
+        .await?
+    };
+
+    Ok(Some(ImportedProfessionalIdentity {
+        stored,
+        display_name: imported.identity.identity.display_name,
+        context_name: imported.name,
+        record_count: imported.identity.records.len(),
+    }))
 }
 
 #[tauri::command]

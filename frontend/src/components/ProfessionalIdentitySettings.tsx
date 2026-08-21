@@ -1,7 +1,7 @@
 'use client'
 
 import { invoke } from '@tauri-apps/api/core'
-import { Plus, RotateCcw, Save, Trash2, X } from 'lucide-react'
+import { FileUp, Plus, RotateCcw, Save, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import type { ProfessionalIdentitySummary, ProfessionalIdentityVersion, StoredProfessionalIdentityVersion } from '@/types/professional-identity'
@@ -12,6 +12,12 @@ type IdentityProject = ProfessionalIdentityVersion['projects'][number]
 type IdentityProjectFact = IdentityProject['facts'][number]
 
 export type SavedProfessionalIdentity = { identityId: string; versionHash: string; displayName: string }
+
+type ImportedProfessionalIdentity = StoredProfessionalIdentityVersion & {
+  display_name: string
+  context_name: string
+  record_count: number
+}
 
 type Props = {
   onClose: () => void
@@ -162,6 +168,16 @@ export function ProfessionalIdentitySettings({ onClose, onSaved }: Props) {
     await onSaved?.({ identityId: result.identity_id, versionHash: result.version_hash, displayName: form.identity.display_name })
   })
 
+  const importContext = () => run(async () => {
+    const result = await invoke<ImportedProfessionalIdentity | null>('identity_import_context_manifest')
+    if (!result) return
+    await refresh(result.identity_id)
+    setSelectedId(result.identity_id)
+    setSelectedVersion(result.version_hash)
+    toast.success(`Imported ${result.record_count} sections from ${result.context_name}.`)
+    await onSaved?.({ identityId: result.identity_id, versionHash: result.version_hash, displayName: result.display_name })
+  })
+
   const selected = identities.find(identity => identity.id === selectedId) ?? null
 
   return (
@@ -171,7 +187,8 @@ export function ProfessionalIdentitySettings({ onClose, onSaved }: Props) {
           <h2 className="text-lg font-semibold">Professional identity</h2>
           <p className="mt-0.5 text-xs text-slate-400">The facts Live Assist can use when answering as you. Everything stays local until a question is sent.</p>
         </div>
-        <button type="button" onClick={startNew} className="ml-auto rounded-md border border-white/10 px-3 py-1.5 text-xs font-semibold hover:bg-white/10">New identity</button>
+        <button type="button" disabled={busy} onClick={importContext} className="ml-auto flex items-center gap-1.5 rounded-md border border-cyan-400/30 px-3 py-1.5 text-xs font-semibold text-cyan-100 hover:bg-cyan-400/10 disabled:opacity-40"><FileUp className="h-3.5 w-3.5" />Import Markdown context</button>
+        <button type="button" onClick={startNew} className="rounded-md border border-white/10 px-3 py-1.5 text-xs font-semibold hover:bg-white/10">New identity</button>
         <button type="button" onClick={onClose} className="rounded p-1.5 text-slate-400 hover:bg-white/10 hover:text-white" aria-label="Close identity manager"><X className="h-5 w-5" /></button>
       </header>
 
