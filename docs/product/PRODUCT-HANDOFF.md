@@ -68,10 +68,25 @@ Extend Meetily with the following capabilities without removing its existing fea
 
 - Keep local processing as the default; cloud providers remain explicit opt-in integrations.
 - Store meeting data in the user's local workspace and recommend operating-system disk encryption and reliable backups; application-level database/audio encryption is optional and is not a personal-release blocker.
-- Store provider API secrets through the operating-system credential facility when that hardening is implemented, and return masked metadata rather than full secrets over frontend IPC.
+- Store provider API secrets through the operating-system credential facility and return only configured/not-configured metadata over frontend IPC. The Windows Provider Settings implementation now follows this rule.
 - Keep meeting/document text out of ordinary logs.
 - Model output receives no filesystem, network, shell, or application tools.
 - Verify downloaded/imported model artifacts by exact manifest and cryptographic digest before activation.
+
+## Current delivery status — 2026-08-21
+
+The working Meetily baseline, F8/F9 Live Assist capture, Interview lens, production Markdown context import bridge, DeepSeek/Kimi provider adapters, offline evaluation lifecycle, and Windows Provider Settings UI are implemented and locally committed. Provider Settings supports presets and custom OpenAI-compatible endpoints, secure Windows credential storage, bounded connection testing, explicit activation, safe replacement/removal, and active-provider display. OpenAI remains intentionally unconfigured until Ghassan supplies a key later.
+
+The Kimi–DeepSeek comparison is complete. Both answers were grounded but too narrow for the broad `Tell us about yourself` prompt, and both returned Markdown formatting. The shared failure indicates a retrieval/composition defect rather than a provider-selection problem: literal token-overlap retrieval does not recognize a generic interview prompt as a request for broad career evidence.
+
+The former dirty implementation tree has been separated into eight coherent local commits without rewriting the six earlier commits. The immediate delivery sequence is now:
+
+1. add deterministic, lens-aware composition for broad interview questions;
+2. reject or safely normalize inline Markdown and preserve shared-authority qualifiers;
+3. verify the change with provider fixtures and the private imported corpus without tracking private answers; and
+4. run a mock interview followed by the real five-use learning loop.
+
+Detailed completion state and roadmap are maintained in [CURRENT_STATUS_AND_ROADMAP.md](CURRENT_STATUS_AND_ROADMAP.md).
 
 ## Delivery order
 

@@ -33,7 +33,11 @@ Professional identity is a separate product layer defined in [PROFESSIONAL_IDENT
 
 ## Local configuration
 
-The launcher contains no key and never prints one. It first uses inherited process variables. For absent values, it loads only the allowlisted `MEETING_ASSISTANT_LIVE_API_KEY`, `MEETING_ASSISTANT_LIVE_ENDPOINT`, and `MEETING_ASSISTANT_LIVE_MODEL` names from the repository root's ignored `.env` and `.env.provider` files. It ignores every other name and does not execute or interpolate either file as PowerShell. Keeping the API key in `.env` and the non-secret provider binding in `.env.provider` lets secure key setup update the credential without changing the selected endpoint or model.
+Use **Settings → Providers** for normal configuration. It supports DeepSeek, Kimi/Moonshot, OpenAI, and custom OpenAI-compatible providers. A provider is saved first, tested with a bounded tool-free request, and then explicitly activated. Changing its kind, endpoint, model, or key invalidates the prior test and deactivates it until it passes again. The active provider cannot be deleted until another provider is activated.
+
+API keys are stored in Windows Credential Manager. SQLite stores only provider metadata and a credential revision. The frontend receives only whether a key is configured; it never receives or displays the saved key. Leaving the key field blank while editing preserves the existing key, while entering a replacement safely advances the credential revision.
+
+The launcher contains no key and never prints one. Before any UI-managed provider exists, it can bootstrap from inherited process variables or the allowlisted `MEETING_ASSISTANT_LIVE_API_KEY`, `MEETING_ASSISTANT_LIVE_ENDPOINT`, and `MEETING_ASSISTANT_LIVE_MODEL` names in ignored `.env` and `.env.provider` files. It ignores every other name and does not execute or interpolate either file as PowerShell. Once the first UI-managed provider is saved, this environment fallback is disabled so an old key cannot silently become active.
 
 Required variable:
 
@@ -44,7 +48,9 @@ Optional variables:
 - `MEETING_ASSISTANT_LIVE_MODEL` — defaults to `deepseek-v4-pro`. The experiment uses streaming Chat Completions in non-thinking mode and no tools.
 - `MEETING_ASSISTANT_LIVE_ENDPOINT` — defaults to DeepSeek's OpenAI-compatible endpoint at `https://api.deepseek.com/chat/completions`.
 
-Configure these in the Windows user environment or keep the key in the ignored root `.env`, build a release binary once, and then double-click `scripts/start-live-assist.cmd` before a meeting. The launcher checks configuration and the release binary without printing the secret.
+Kimi K3 is also supported through `https://api.moonshot.ai/v1/chat/completions` with model `kimi-k3`. Because K3 always reasons, its adapter uses `reasoning_effort: low`, omits unsupported sampling parameters, and reserves a separate hidden-reasoning token allowance without changing the visible-answer contract. Live Assist consumes only final-answer `content` deltas and continues to reject tool calls.
+
+The environment variables above are compatibility/bootstrap settings, not the preferred switching workflow. Build a release binary once and then double-click `scripts/start-live-assist.cmd` before a meeting. The launcher checks configuration and the release binary without printing a secret.
 
 Build a standalone executable through Tauri from `frontend/` with `pnpm exec tauri build --no-bundle`. Do not use plain `cargo build --release` for a launchable app: it retains `build.devUrl` and expects the Next development server on localhost. Direct Cargo builds must explicitly enable `--features custom-protocol` after the frontend export exists.
 
@@ -65,6 +71,8 @@ Proceed only if the suggestions are actually used. Revise delivery if the conten
 
 Provider behavior is measured separately from deterministic CI. Run `scripts/test-live-assist-voice.cmd` on the reference PC to exercise the production prompt and streaming provider path against the synthetic fixtures. The ignored harness rejects coaching prefixes and assistant meta-language, verifies that an unspoken draft is not converted into meeting history, and appends timestamped prompt/model/latency results under the ignored `target/` directory without recording the API key. A separate private run may set `MEETING_ASSISTANT_LIVE_HARNESS_PROFILE_PATH` to an ignored workload JSON file. That file may reference only relative manifest, bundle, and Markdown paths below its own corpus root; the harness rejects absolute paths and traversal and preserves Markdown sections as separately attributable identity records. Its ignored JSONL result stores the questions, generated answers, audits, and retrieved IDs, but does not serialize the raw identity object or source documents.
 
+For a real trial, open the Professional Identity manager and choose `Import Markdown context`, then select the private `meeting-assistant.context.json`. Production uses the same bounded parser as the private harness, copies the resulting records into one immutable local identity version, selects that exact version in Live Assist, and retains no link or watcher to the source folder. Re-import the manifest deliberately after editing the private Markdown corpus.
+
 ## Deliberate non-goals
 
 - No full-meeting capture or background speaker detection.
@@ -73,4 +81,4 @@ Provider behavior is measured separately from deterministic CI. Run `scripts/tes
 - No local language-model answer fallback.
 - No changes to the existing 600 ms recording mixer window; that pipeline is measured separately before any tuning.
 - No automatic provider enablement. Cloud access is an explicit per-launch choice.
-- No arbitrary document ingestion or fine-tuning. Professional Identity accepts only its closed declarative schema and uses bounded local retrieval; future fields should still be justified by repeated `Missing context:` evidence.
+- No arbitrary document ingestion, folder crawling, live file watching, or fine-tuning. Professional Identity imports only an explicitly selected closed-schema context manifest whose relative JSON/Markdown dependencies remain below its corpus root, then uses bounded local retrieval; future fields should still be justified by repeated `Missing context:` evidence.
