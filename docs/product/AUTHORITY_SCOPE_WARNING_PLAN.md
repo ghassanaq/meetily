@@ -1,6 +1,6 @@
 # Authority-Scope Warning Implementation Plan
 
-Status: approved for Checkpoint A implementation; Checkpoints B and C remain unauthorised
+Status: Checkpoint A complete; Checkpoint B harness implemented with private five-trial evidence pending; Checkpoint C remains unauthorised
 Date: 2026-08-21
 Design: `AUTHORITY_SCOPE_WARNING_DESIGN.md`
 

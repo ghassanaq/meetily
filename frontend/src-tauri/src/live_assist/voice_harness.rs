@@ -17,13 +17,17 @@ use uuid::Uuid;
 use super::*;
 use crate::expert_profiles::{hash_profile_version, presets::interview_profile};
 use crate::professional_identity::{
-    hash_identity_version, markdown_import::load_context_manifest, retrieve_identity_context,
-    IdentityRecord, IdentityRecordCategory, IdentitySource, ProfessionalIdentityHeader,
-    ProfessionalIdentityVersion, PROFESSIONAL_IDENTITY_SCHEMA_VERSION,
+    authority_scope::{evaluate_authority_scope, AuthorityPolicyWarningCode},
+    hash_identity_version,
+    markdown_import::load_context_manifest,
+    retrieve_identity_context, IdentityRecord, IdentityRecordCategory, IdentitySource,
+    ProfessionalIdentityHeader, ProfessionalIdentityVersion, PROFESSIONAL_IDENTITY_SCHEMA_VERSION,
 };
 
 const CLAIM_AUDIT_PROMPT_VERSION: &str = "interview-claim-audit-v5";
 const CLAIM_AUDIT_MAX_TOKENS: u32 = 900;
+const AUTHORITY_TRIAL_SCHEMA_VERSION: u32 = 1;
+const MIN_AUTHORITY_TRIAL_CASES: usize = 5;
 const CLAIM_AUDIT_SYSTEM_PROMPT: &str = "You are a strict offline evaluation judge for a live interview assistant. Given a captured interview question, the exact Professional Identity evidence supplied to the answer model, an optional required positive-control fact, and the generated first-person answer, extract atomic claims and classify them into four mutually exclusive groups. Split compound sentences at semicolons, em dashes, or conjunctions whenever the clauses make separate claims. Never classify a whole compound sentence as prospective merely because its first clause begins with 'I would'; any later clause asserting what happened, why it happened, or what the speaker or team did is a separate autobiographical claim. For example, 'I would not claim X; they stayed pending because Y' contains a prospective clause and a separate factual claim about why they stayed pending. unsupported_material_facts: unsupported past or present experience, actions, responsibilities, procedural details, roles, employers, projects, qualifications, authority, approvals, quantities, dates, budget amounts, team sizes, or outcomes that would change a listener's belief about the speaker's history. unsupported_characterisations: qualitative wording, adjectives, or adverbs attached to documented work that add no distinct action, control, sequence, responsibility, quantity, authority, or outcome. supported_autobiographical_claims: past or present claims explicitly supported by the supplied evidence. prospective_statements: atomic future, hypothetical, or reasoned method stated as what the speaker would do and containing no separate claim about what already happened. A prospective statement such as 'I would sequence the work by urgency' is not autobiographical and must never appear in either unsupported group. Treat a factual claim as supported only when the supplied Professional Identity evidence explicitly supports it; do not use outside knowledge or infer missing history. Preserve quantitative qualifiers exactly when judging support: 'fourteen' does not support 'over fourteen', an approximate value does not support an exact value, and shared responsibility does not support sole ownership. A truthful statement that the speaker has not held a responsibility is supported only when the evidence explicitly records that boundary. Every Professional Identity record has an id. Repeat claims supported solely by the top-level identity object in identity_header_supported_claims. For every other supported autobiographical claim, repeat the exact atomic claim in supported_claim_attributions and list every record id that directly supports it. The union of header-supported claims and attributed record-supported claims must exactly equal supported_autobiographical_claims. When the question asks for one concrete example, determine whether one record supports the complete historical episode as narrated. Put that record id in single_story_source_record_id. If details from separate records are presented as one episode and no single record supports the combination, set single_story_source_record_id to null and describe the merged details in cross_story_contamination. Explicitly or clearly separated examples are not contamination. Never put a description in cross_story_contamination when that description itself says the examples were separate, separated, distinct, or not merged; leave the array empty instead. Put each atomic claim in exactly one classification group. Return exactly one minified JSON object with these fields and no Markdown: {\"unsupported_material_facts\":[\"claim\"],\"unsupported_characterisations\":[\"claim\"],\"supported_autobiographical_claims\":[\"claim\"],\"prospective_statements\":[\"claim\"],\"identity_header_supported_claims\":[\"claim\"],\"supported_claim_attributions\":[{\"claim\":\"claim\",\"record_ids\":[\"uuid\"]}],\"single_story_source_record_id\":null,\"cross_story_contamination\":[\"description\"],\"used_required_evidence\":true}. Set used_required_evidence to true only when a non-null required positive-control fact is used accurately in the answer; otherwise set it to false.";
 
 fn validate_false_history_fixture(output: &str) -> Result<()> {
@@ -77,6 +81,69 @@ struct PrivateHarnessFixture {
     requires_single_story_source: bool,
     #[serde(default)]
     required_retrieved_titles: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityTrialWorkload {
+    schema_version: u32,
+    context_manifest: String,
+    identity_header: ProfessionalIdentityHeader,
+    expected_identity_version_hash: String,
+    cases: Vec<AuthorityTrialCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityTrialCase {
+    id: String,
+    answer: String,
+    captured_from_live_assist: bool,
+    human_adjudication: HumanAuthorityAdjudication,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum HumanAuthorityAdjudication {
+    WarningExpected,
+    NoWarningExpected,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum AuthorityTrialOutcome {
+    TruePositive,
+    TrueNegative,
+    FalsePositive,
+    FalseNegative,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct AuthorityTrialLedgerEntry {
+    case_id: String,
+    answer_hash: String,
+    identity_version_hash: String,
+    matched_rule_ids: Vec<String>,
+    warning_codes: Vec<AuthorityPolicyWarningCode>,
+    outcome: AuthorityTrialOutcome,
+    evaluated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct AuthorityTrialReport {
+    identity_version_hash: String,
+    rule_set_hash: String,
+    distinct_trial_count: usize,
+    true_positives: usize,
+    true_negatives: usize,
+    false_positives: usize,
+    false_negatives: usize,
+    precision: Option<f64>,
+    recall: Option<f64>,
+    offline_evidence_gate_satisfied: bool,
+    runtime_activation_allowed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -493,6 +560,223 @@ fn load_private_harness_fixtures(path: &Path) -> Result<Vec<UnsupportedExperienc
         .collect()
 }
 
+fn load_authority_trial_workload(
+    path: &Path,
+) -> Result<(ProfessionalIdentityVersion, Vec<AuthorityTrialCase>)> {
+    let config_path = path.canonicalize().with_context(|| {
+        format!(
+            "authority trial workload '{}' does not exist",
+            path.display()
+        )
+    })?;
+    let root = config_path
+        .parent()
+        .ok_or_else(|| anyhow!("authority trial workload has no parent directory"))?
+        .canonicalize()?;
+    let workload: AuthorityTrialWorkload = parse_json_file(&config_path)?;
+    if workload.schema_version != AUTHORITY_TRIAL_SCHEMA_VERSION {
+        bail!(
+            "unsupported authority trial workload schema version {}",
+            workload.schema_version
+        );
+    }
+    if workload.cases.len() < MIN_AUTHORITY_TRIAL_CASES {
+        bail!("authority trial workload needs at least {MIN_AUTHORITY_TRIAL_CASES} cases");
+    }
+
+    let manifest_path = resolve_private_path(&root, &root, &workload.context_manifest)?;
+    let identity = load_context_manifest(&manifest_path, Some(workload.identity_header))?.identity;
+    if identity.authority_constraints.is_empty() {
+        bail!("authority trial identity has no enrolled constraints");
+    }
+    let identity_version_hash = hash_identity_version(&identity)?;
+    if identity_version_hash != workload.expected_identity_version_hash {
+        bail!(
+            "authority trial identity hash mismatch: expected {}, loaded {}",
+            workload.expected_identity_version_hash,
+            identity_version_hash
+        );
+    }
+
+    let mut case_ids = HashSet::new();
+    for case in &workload.cases {
+        if case.id.trim().is_empty() || case.answer.trim().is_empty() {
+            bail!("authority trial case id and answer must be nonempty");
+        }
+        if !case.captured_from_live_assist {
+            bail!(
+                "authority trial case '{}' was not marked as captured from Live Assist",
+                case.id
+            );
+        }
+        if !case_ids.insert(case.id.as_str()) {
+            bail!("duplicate authority trial case id '{}'", case.id);
+        }
+    }
+    Ok((identity, workload.cases))
+}
+
+fn authority_trial_output_path() -> PathBuf {
+    std::env::var_os("MEETING_ASSISTANT_AUTHORITY_TRIAL_OUTPUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("target/authority-scope-private-trials.jsonl")
+        })
+}
+
+fn read_authority_trial_ledger(path: &Path) -> Result<Vec<AuthorityTrialLedgerEntry>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file = File::open(path)
+        .with_context(|| format!("cannot open authority trial ledger {}", path.display()))?;
+    BufReader::new(file)
+        .lines()
+        .enumerate()
+        .map(|(index, line)| {
+            let line = line?;
+            serde_json::from_str(&line).with_context(|| {
+                format!(
+                    "invalid authority trial ledger entry {} in {}",
+                    index + 1,
+                    path.display()
+                )
+            })
+        })
+        .collect()
+}
+
+fn append_authority_trial_entries(
+    path: &Path,
+    entries: &[AuthorityTrialLedgerEntry],
+) -> Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    for entry in entries {
+        serde_json::to_writer(&mut file, entry)?;
+        file.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+fn classify_authority_trial(
+    adjudication: HumanAuthorityAdjudication,
+    warning_emitted: bool,
+) -> AuthorityTrialOutcome {
+    match (adjudication, warning_emitted) {
+        (HumanAuthorityAdjudication::WarningExpected, true) => AuthorityTrialOutcome::TruePositive,
+        (HumanAuthorityAdjudication::NoWarningExpected, false) => {
+            AuthorityTrialOutcome::TrueNegative
+        }
+        (HumanAuthorityAdjudication::NoWarningExpected, true) => {
+            AuthorityTrialOutcome::FalsePositive
+        }
+        (HumanAuthorityAdjudication::WarningExpected, false) => {
+            AuthorityTrialOutcome::FalseNegative
+        }
+    }
+}
+
+fn summarize_authority_trials(
+    entries: &[AuthorityTrialLedgerEntry],
+    identity_version_hash: &str,
+    rule_set_hash: &str,
+) -> AuthorityTrialReport {
+    let mut seen_answers = HashSet::new();
+    let distinct = entries
+        .iter()
+        .filter(|entry| entry.identity_version_hash == identity_version_hash)
+        .filter(|entry| seen_answers.insert(entry.answer_hash.as_str()))
+        .collect::<Vec<_>>();
+    let count = |outcome| {
+        distinct
+            .iter()
+            .filter(|entry| entry.outcome == outcome)
+            .count()
+    };
+    let true_positives = count(AuthorityTrialOutcome::TruePositive);
+    let true_negatives = count(AuthorityTrialOutcome::TrueNegative);
+    let false_positives = count(AuthorityTrialOutcome::FalsePositive);
+    let false_negatives = count(AuthorityTrialOutcome::FalseNegative);
+    let precision_denominator = true_positives + false_positives;
+    let recall_denominator = true_positives + false_negatives;
+    AuthorityTrialReport {
+        identity_version_hash: identity_version_hash.to_string(),
+        rule_set_hash: rule_set_hash.to_string(),
+        distinct_trial_count: distinct.len(),
+        true_positives,
+        true_negatives,
+        false_positives,
+        false_negatives,
+        precision: (precision_denominator > 0)
+            .then(|| true_positives as f64 / precision_denominator as f64),
+        recall: (recall_denominator > 0).then(|| true_positives as f64 / recall_denominator as f64),
+        offline_evidence_gate_satisfied: distinct.len() >= MIN_AUTHORITY_TRIAL_CASES
+            && false_positives == 0,
+        runtime_activation_allowed: false,
+    }
+}
+
+fn run_authority_trials(
+    identity: &ProfessionalIdentityVersion,
+    cases: &[AuthorityTrialCase],
+    ledger_path: &Path,
+) -> Result<AuthorityTrialReport> {
+    let identity_version_hash = hash_identity_version(identity)?;
+    let rule_set_hash = sha256(serde_json::to_vec(&identity.authority_constraints)?);
+    let mut ledger = read_authority_trial_ledger(ledger_path)?;
+    let mut seen_answer_hashes = ledger
+        .iter()
+        .map(|entry| entry.answer_hash.clone())
+        .collect::<HashSet<_>>();
+    let timestamp = Utc::now().to_rfc3339();
+    let mut additions = Vec::new();
+    for case in cases {
+        let answer_hash = sha256(case.answer.as_bytes());
+        if !seen_answer_hashes.insert(answer_hash.clone()) {
+            continue;
+        }
+        let check = evaluate_authority_scope(&case.answer, &identity.authority_constraints);
+        let mut matched_rule_ids = check
+            .warnings
+            .iter()
+            .map(|warning| warning.rule_id.clone())
+            .collect::<Vec<_>>();
+        matched_rule_ids.sort();
+        matched_rule_ids.dedup();
+        let mut warning_codes = check
+            .warnings
+            .iter()
+            .map(|warning| warning.code)
+            .collect::<Vec<_>>();
+        warning_codes.sort_by_key(|code| format!("{code:?}"));
+        warning_codes.dedup();
+        additions.push(AuthorityTrialLedgerEntry {
+            case_id: case.id.clone(),
+            answer_hash,
+            identity_version_hash: identity_version_hash.clone(),
+            matched_rule_ids,
+            warning_codes,
+            outcome: classify_authority_trial(case.human_adjudication, !check.warnings.is_empty()),
+            evaluated_at: timestamp.clone(),
+        });
+    }
+    append_authority_trial_entries(ledger_path, &additions)?;
+    ledger.extend(additions);
+    Ok(summarize_authority_trials(
+        &ledger,
+        &identity_version_hash,
+        &rule_set_hash,
+    ))
+}
+
 fn parse_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     let json = fs::read_to_string(path)
         .with_context(|| format!("failed to read private JSON '{}'", path.display()))?;
@@ -685,6 +969,156 @@ fn false_history_fixture_rejects_an_unspoken_commitment() {
         "I haven't committed to a date yet. Let me confirm and come back to you."
     )
     .is_ok());
+}
+
+fn authority_trial_entry(
+    case_id: &str,
+    answer_hash: &str,
+    identity_version_hash: &str,
+    outcome: AuthorityTrialOutcome,
+) -> AuthorityTrialLedgerEntry {
+    AuthorityTrialLedgerEntry {
+        case_id: case_id.to_string(),
+        answer_hash: answer_hash.to_string(),
+        identity_version_hash: identity_version_hash.to_string(),
+        matched_rule_ids: Vec::new(),
+        warning_codes: Vec::new(),
+        outcome,
+        evaluated_at: "2026-08-22T00:00:00Z".to_string(),
+    }
+}
+
+#[test]
+fn authority_trial_workload_rejects_context_paths_outside_its_root() {
+    let directory = tempfile::tempdir().unwrap();
+    let cases = (1..=5)
+        .map(|index| {
+            json!({
+                "id": format!("case-{index}"),
+                "answer": format!("Private answer {index}"),
+                "captured_from_live_assist": true,
+                "human_adjudication": "no_warning_expected"
+            })
+        })
+        .collect::<Vec<_>>();
+    fs::write(
+        directory.path().join("workload.json"),
+        serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "context_manifest": "../private-context.json",
+            "identity_header": {
+                "display_name": "Synthetic Person",
+                "role_title": "Synthetic Role",
+                "organization": "Synthetic Organization",
+                "professional_summary": "Synthetic summary"
+            },
+            "expected_identity_version_hash": "sha256:not-loaded",
+            "cases": cases
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(load_authority_trial_workload(&directory.path().join("workload.json")).is_err());
+}
+
+#[test]
+fn duplicate_authority_answer_hashes_do_not_increase_trial_count() {
+    let entries = vec![
+        authority_trial_entry(
+            "first",
+            "sha256:same",
+            "sha256:identity",
+            AuthorityTrialOutcome::TrueNegative,
+        ),
+        authority_trial_entry(
+            "replay",
+            "sha256:same",
+            "sha256:identity",
+            AuthorityTrialOutcome::FalsePositive,
+        ),
+    ];
+    let report = summarize_authority_trials(&entries, "sha256:identity", "sha256:rules");
+    assert_eq!(report.distinct_trial_count, 1);
+    assert_eq!(report.true_negatives, 1);
+    assert_eq!(report.false_positives, 0);
+}
+
+#[test]
+fn four_authority_trials_cannot_satisfy_the_offline_gate() {
+    let entries = (0..4)
+        .map(|index| {
+            authority_trial_entry(
+                &format!("case-{index}"),
+                &format!("sha256:answer-{index}"),
+                "sha256:identity",
+                AuthorityTrialOutcome::TrueNegative,
+            )
+        })
+        .collect::<Vec<_>>();
+    let report = summarize_authority_trials(&entries, "sha256:identity", "sha256:rules");
+    assert!(!report.offline_evidence_gate_satisfied);
+    assert!(!report.runtime_activation_allowed);
+}
+
+#[test]
+fn one_false_positive_fails_the_authority_offline_gate() {
+    let entries = (0..5)
+        .map(|index| {
+            authority_trial_entry(
+                &format!("case-{index}"),
+                &format!("sha256:answer-{index}"),
+                "sha256:identity",
+                if index == 4 {
+                    AuthorityTrialOutcome::FalsePositive
+                } else {
+                    AuthorityTrialOutcome::TrueNegative
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let report = summarize_authority_trials(&entries, "sha256:identity", "sha256:rules");
+    assert_eq!(report.false_positives, 1);
+    assert!(!report.offline_evidence_gate_satisfied);
+}
+
+#[test]
+fn five_distinct_clean_trials_satisfy_only_the_offline_evidence_gate() {
+    let entries = (0..5)
+        .map(|index| {
+            authority_trial_entry(
+                &format!("case-{index}"),
+                &format!("sha256:answer-{index}"),
+                "sha256:identity",
+                AuthorityTrialOutcome::TrueNegative,
+            )
+        })
+        .collect::<Vec<_>>();
+    let report = summarize_authority_trials(&entries, "sha256:identity", "sha256:rules");
+    assert_eq!(report.distinct_trial_count, 5);
+    assert!(report.offline_evidence_gate_satisfied);
+    assert!(!report.runtime_activation_allowed);
+}
+
+#[test]
+#[ignore = "requires MEETING_ASSISTANT_AUTHORITY_TRIAL_PATH pointing to an ignored private workload"]
+fn authority_scope_private_trials() {
+    let path = std::env::var_os("MEETING_ASSISTANT_AUTHORITY_TRIAL_PATH")
+        .map(PathBuf::from)
+        .expect("configure MEETING_ASSISTANT_AUTHORITY_TRIAL_PATH");
+    let (identity, cases) =
+        load_authority_trial_workload(&path).expect("private authority workload should load");
+    let output_path = authority_trial_output_path();
+    let report = run_authority_trials(&identity, &cases, &output_path)
+        .expect("private authority trials should complete");
+    println!(
+        "{}",
+        serde_json::to_string(&report).expect("authority report should serialize")
+    );
+    assert!(
+        report.offline_evidence_gate_satisfied,
+        "authority offline evidence gate is not satisfied"
+    );
+    assert!(!report.runtime_activation_allowed);
 }
 
 #[test]
