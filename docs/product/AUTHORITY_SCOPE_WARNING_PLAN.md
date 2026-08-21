@@ -1,6 +1,6 @@
 # Authority-Scope Warning Implementation Plan
 
-Status: Checkpoint A complete; Checkpoint B harness implemented with private five-trial evidence pending; Checkpoint C remains unauthorised
+Status: Checkpoints A and B complete; Checkpoint C remains unauthorised pending explicit approval
 Date: 2026-08-21
 Design: `AUTHORITY_SCOPE_WARNING_DESIGN.md`
 
@@ -321,6 +321,13 @@ Checkpoint B stop condition:
 - report the five-trial confusion counts and rule/identity hashes without private answer text;
 - do not implement or expose runtime warnings;
 - obtain explicit approval before Checkpoint C.
+
+Measured 2026-08-22: five distinct private Live Assist answers produced TP=0, TN=5, FP=0,
+and FN=0 for identity hash `sha256:6480011cef0620d35f4c8899ce2f99ee457d81d0807e51c96705c7bf4b3426f3`
+and rule-set hash `sha256:4cc45b5c01ecb5d472185597ec783708cf25f932561f925781a03e2a122c4dd7`.
+The offline evidence gate passed. Precision and recall were undefined because this batch contained
+no human-expected positive case; sensitivity remains covered synthetically rather than measured
+by this private batch. Runtime activation remained false.
 
 ## 6. Checkpoint C — production advisory path, separately authorised
 
