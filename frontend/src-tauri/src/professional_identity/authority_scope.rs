@@ -23,7 +23,7 @@ pub enum AuthorityPolicyWarningCode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AuthorityPolicyWarning {
     pub code: AuthorityPolicyWarningCode,
     pub rule_id: String,
@@ -38,7 +38,7 @@ pub struct AuthorityPolicyWarning {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AuthorityCheckResult {
     pub status: AuthorityCheckStatus,
     pub evaluated_rule_count: u32,
@@ -556,6 +556,26 @@ mod tests {
             .unwrap(),
             "whole operation"
         );
+    }
+
+    #[test]
+    fn snapshot_contract_serializes_authority_diagnostics_as_camel_case() {
+        let result = evaluate_authority_scope(
+            "I managed the whole operation.",
+            &[rule(
+                "operation-boundary",
+                &[],
+                &[AuthorityActionFamily::Manage],
+                &["whole operation"],
+            )],
+        );
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(json["evaluatedRuleCount"], 1);
+        assert!(json.get("evaluated_rule_count").is_none());
+        let warning = &json["warnings"][0];
+        assert_eq!(warning["ruleId"], "operation-boundary");
+        assert_eq!(warning["matchedExcludedObject"], "whole operation");
+        assert!(warning.get("rule_id").is_none());
     }
 
     #[test]
