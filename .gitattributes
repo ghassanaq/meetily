@@ -1,0 +1,5 @@
+frontend/src-tauri/migrations/*.sql text eol=crlf
+frontend/src-tauri/migrations/20260815000000_add_expert_profiles.sql text eol=lf
+frontend/src-tauri/migrations/20260815120000_add_evidence_foundation.sql text eol=lf
+frontend/src-tauri/migrations/20260815130000_add_evidence_provenance.sql text eol=lf
+frontend/src-tauri/migrations/20260821000000_add_live_assist_providers.sql text eol=lf
