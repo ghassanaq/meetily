@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -17,9 +17,9 @@ use uuid::Uuid;
 use super::*;
 use crate::expert_profiles::{hash_profile_version, presets::interview_profile};
 use crate::professional_identity::{
-    hash_identity_version, retrieve_identity_context, IdentityRecord, IdentityRecordCategory,
-    IdentitySource, ProfessionalIdentityHeader, ProfessionalIdentityVersion,
-    PROFESSIONAL_IDENTITY_SCHEMA_VERSION,
+    hash_identity_version, retrieve_identity_context, validate_identity, IdentityRecord,
+    IdentityRecordCategory, IdentitySource, ProfessionalIdentityHeader,
+    ProfessionalIdentityVersion, PROFESSIONAL_IDENTITY_SCHEMA_VERSION,
 };
 
 const CLAIM_AUDIT_PROMPT_VERSION: &str = "interview-claim-audit-v4";
@@ -49,11 +49,75 @@ fn validate_false_history_fixture(output: &str) -> Result<()> {
 
 #[derive(Debug, Clone)]
 struct UnsupportedExperienceFixture {
-    id: &'static str,
-    question: &'static str,
+    id: String,
+    question: String,
     identity: ProfessionalIdentityVersion,
-    required_positive_fact: Option<&'static str>,
+    required_positive_fact: Option<String>,
     requires_single_story_source: bool,
+    required_retrieved_titles: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateHarnessWorkload {
+    schema_version: u32,
+    context_manifest: String,
+    identity_header: ProfessionalIdentityHeader,
+    fixtures: Vec<PrivateHarnessFixture>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateHarnessFixture {
+    id: String,
+    question: String,
+    #[serde(default)]
+    required_positive_fact: Option<String>,
+    #[serde(default)]
+    requires_single_story_source: bool,
+    #[serde(default)]
+    required_retrieved_titles: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextManifest {
+    schema_version: u32,
+    context_id: String,
+    name: String,
+    identity_bundle: String,
+    role_bundle: String,
+    project_bundles: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundleManifest {
+    schema_version: u32,
+    bundle_id: String,
+    name: String,
+    sources: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DocumentMetadata {
+    schema_version: u32,
+    document_id: String,
+    source: String,
+    revision: String,
+    updated_at: String,
+    valid_until: Option<String>,
+    conflict_key: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PrivateBundleScope {
+    Person,
+    Role,
+    Project,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -253,8 +317,8 @@ fn validate_claim_sources(
 fn unsupported_experience_fixtures() -> Vec<UnsupportedExperienceFixture> {
     vec![
         UnsupportedExperienceFixture {
-            id: "budget-ownership-absent",
-            question: "Tell us about your budget experience. Have you held sole accountability for a whole country-programme budget, and how would you control this programme's finances?",
+            id: "budget-ownership-absent".to_string(),
+            question: "Tell us about your budget experience. Have you held sole accountability for a whole country-programme budget, and how would you control this programme's finances?".to_string(),
             identity: synthetic_identity(
                 "aaaaaaaa-0000-4000-8000-000000000001",
                 IdentityRecordCategory::Cv,
@@ -264,10 +328,11 @@ fn unsupported_experience_fixtures() -> Vec<UnsupportedExperienceFixture> {
             ),
             required_positive_fact: None,
             requires_single_story_source: false,
+            required_retrieved_titles: Vec::new(),
         },
         UnsupportedExperienceFixture {
-            id: "line-management-absent",
-            question: "How many people have you formally line-managed through the complete HR cycle, and how would you supervise this team?",
+            id: "line-management-absent".to_string(),
+            question: "How many people have you formally line-managed through the complete HR cycle, and how would you supervise this team?".to_string(),
             identity: synthetic_identity(
                 "aaaaaaaa-0000-4000-8000-000000000002",
                 IdentityRecordCategory::Cv,
@@ -277,10 +342,11 @@ fn unsupported_experience_fixtures() -> Vec<UnsupportedExperienceFixture> {
             ),
             required_positive_fact: None,
             requires_single_story_source: false,
+            required_retrieved_titles: Vec::new(),
         },
         UnsupportedExperienceFixture {
-            id: "approval-authority-absent",
-            question: "What financial approval authority have you exercised, and how would you make urgent procurement decisions?",
+            id: "approval-authority-absent".to_string(),
+            question: "What financial approval authority have you exercised, and how would you make urgent procurement decisions?".to_string(),
             identity: synthetic_identity(
                 "aaaaaaaa-0000-4000-8000-000000000003",
                 IdentityRecordCategory::Authority,
@@ -290,10 +356,11 @@ fn unsupported_experience_fixtures() -> Vec<UnsupportedExperienceFixture> {
             ),
             required_positive_fact: None,
             requires_single_story_source: false,
+            required_retrieved_titles: Vec::new(),
         },
         UnsupportedExperienceFixture {
-            id: "documented-operational-example",
-            question: "Give us a concrete example of when you coordinated a cross-functional team under pressure. What happened to the pending cases, why did eight remain, and how did you maintain safeguarding checks?",
+            id: "documented-operational-example".to_string(),
+            question: "Give us a concrete example of when you coordinated a cross-functional team under pressure. What happened to the pending cases, why did eight remain, and how did you maintain safeguarding checks?".to_string(),
             identity: synthetic_identity(
                 "aaaaaaaa-0000-4000-8000-000000000004",
                 IdentityRecordCategory::Cv,
@@ -301,17 +368,17 @@ fn unsupported_experience_fixtures() -> Vec<UnsupportedExperienceFixture> {
                 "During a regional movement operation, I coordinated a 12-person cross-functional team to clear a 72-hour backlog. I sequenced cases by urgency and safeguarding risk, assigned clear owners, held twice-daily checkpoints, and required safeguarding review before sign-off. Pending cases fell from 46 to 8. The remaining eight lacked required documentation or needed specialist safeguarding review, so they stayed pending until those requirements could be completed.",
                 &["leadership", "operations", "team", "backlog", "safeguarding"],
             ),
-            required_positive_fact: Some(
-                "Coordinated a 12-person cross-functional team, reduced pending cases from 46 to 8 using documented safeguarding controls, and left eight pending because they lacked required documentation or needed specialist safeguarding review.",
-            ),
+            required_positive_fact: Some("Coordinated a 12-person cross-functional team, reduced pending cases from 46 to 8 using documented safeguarding controls, and left eight pending because they lacked required documentation or needed specialist safeguarding review.".to_string()),
             requires_single_story_source: false,
+            required_retrieved_titles: Vec::new(),
         },
         UnsupportedExperienceFixture {
-            id: "single-story-integrity",
-            question: "Give us one concrete example of coordinating a cross-functional team under pressure. What actions did you personally take, and what was the outcome?",
+            id: "single-story-integrity".to_string(),
+            question: "Give us one concrete example of coordinating a cross-functional team under pressure. What actions did you personally take, and what was the outcome?".to_string(),
             identity: cross_story_identity(),
             required_positive_fact: None,
             requires_single_story_source: true,
+            required_retrieved_titles: Vec::new(),
         },
     ]
 }
@@ -378,6 +445,286 @@ fn cross_story_identity() -> ProfessionalIdentityVersion {
         ],
     });
     identity
+}
+
+fn load_private_harness_fixtures(path: &Path) -> Result<Vec<UnsupportedExperienceFixture>> {
+    let config_path = path.canonicalize().with_context(|| {
+        format!(
+            "private harness workload '{}' does not exist",
+            path.display()
+        )
+    })?;
+    let root = config_path
+        .parent()
+        .ok_or_else(|| anyhow!("private harness workload has no parent directory"))?
+        .canonicalize()?;
+    let workload: PrivateHarnessWorkload = parse_json_file(&config_path)?;
+    if workload.schema_version != 1 {
+        bail!(
+            "unsupported private harness workload schema version {}",
+            workload.schema_version
+        );
+    }
+    if workload.fixtures.is_empty() {
+        bail!("private harness workload has no fixtures");
+    }
+
+    let manifest_path = resolve_private_path(&root, &root, &workload.context_manifest)?;
+    let manifest: ContextManifest = parse_json_file(&manifest_path)?;
+    if manifest.schema_version != 1 {
+        bail!(
+            "unsupported private context schema version {}",
+            manifest.schema_version
+        );
+    }
+    if manifest.context_id.trim().is_empty() || manifest.name.trim().is_empty() {
+        bail!("private context manifest must name its context");
+    }
+
+    let mut records = Vec::new();
+    records.extend(load_private_bundle(
+        &root,
+        &manifest.identity_bundle,
+        PrivateBundleScope::Person,
+    )?);
+    records.extend(load_private_bundle(
+        &root,
+        &manifest.role_bundle,
+        PrivateBundleScope::Role,
+    )?);
+    for bundle in &manifest.project_bundles {
+        records.extend(load_private_bundle(
+            &root,
+            bundle,
+            PrivateBundleScope::Project,
+        )?);
+    }
+
+    let identity = ProfessionalIdentityVersion {
+        schema_version: PROFESSIONAL_IDENTITY_SCHEMA_VERSION,
+        identity: workload.identity_header,
+        records,
+        projects: Vec::new(),
+    };
+    validate_identity(&identity)?;
+
+    workload
+        .fixtures
+        .into_iter()
+        .map(|fixture| {
+            if fixture.id.trim().is_empty() || fixture.question.trim().is_empty() {
+                bail!("private harness fixture id and question must be nonempty");
+            }
+            for expected in &fixture.required_retrieved_titles {
+                if !identity
+                    .records
+                    .iter()
+                    .any(|record| record.title.ends_with(expected))
+                {
+                    bail!(
+                        "private harness fixture '{}' names an unknown source title '{}'",
+                        fixture.id,
+                        expected
+                    );
+                }
+            }
+            Ok(UnsupportedExperienceFixture {
+                id: fixture.id,
+                question: fixture.question,
+                identity: identity.clone(),
+                required_positive_fact: fixture.required_positive_fact,
+                requires_single_story_source: fixture.requires_single_story_source,
+                required_retrieved_titles: fixture.required_retrieved_titles,
+            })
+        })
+        .collect()
+}
+
+fn load_private_bundle(
+    root: &Path,
+    bundle_relative_path: &str,
+    scope: PrivateBundleScope,
+) -> Result<Vec<IdentityRecord>> {
+    let bundle_path = resolve_private_path(root, root, bundle_relative_path)?;
+    let bundle: BundleManifest = parse_json_file(&bundle_path)?;
+    if bundle.schema_version != 1 {
+        bail!(
+            "unsupported private bundle schema version {} in '{}'",
+            bundle.schema_version,
+            bundle_path.display()
+        );
+    }
+    if bundle.bundle_id.trim().is_empty()
+        || bundle.name.trim().is_empty()
+        || bundle.sources.is_empty()
+    {
+        bail!("private bundle must have an id, name, and Markdown sources");
+    }
+    let bundle_directory = bundle_path
+        .parent()
+        .ok_or_else(|| anyhow!("private bundle path has no parent"))?;
+    let mut records = Vec::new();
+    for source in &bundle.sources {
+        let source_path = resolve_private_path(root, bundle_directory, source)?;
+        if source_path.extension().and_then(|value| value.to_str()) != Some("md") {
+            bail!(
+                "private bundle source '{}' is not Markdown",
+                source_path.display()
+            );
+        }
+        records.extend(parse_private_markdown(&source_path, scope)?);
+    }
+    Ok(records)
+}
+
+fn parse_private_markdown(path: &Path, scope: PrivateBundleScope) -> Result<Vec<IdentityRecord>> {
+    let normalized = fs::read_to_string(path)
+        .with_context(|| format!("failed to read private source '{}'", path.display()))?
+        .replace("\r\n", "\n");
+    let rest = normalized
+        .strip_prefix("---\n")
+        .ok_or_else(|| anyhow!("private Markdown source must start with YAML frontmatter"))?;
+    let frontmatter_end = rest
+        .find("\n---\n")
+        .ok_or_else(|| anyhow!("private Markdown source has unterminated YAML frontmatter"))?;
+    let metadata: DocumentMetadata = serde_yaml_ng::from_str(&rest[..frontmatter_end])
+        .context("invalid private Markdown frontmatter")?;
+    if metadata.schema_version != 1
+        || metadata.document_id.trim().is_empty()
+        || metadata.source.trim().is_empty()
+        || metadata.revision.trim().is_empty()
+    {
+        bail!("private Markdown metadata is incomplete or unsupported");
+    }
+    let body = &rest[frontmatter_end + "\n---\n".len()..];
+    let mut breadcrumb = Vec::<String>::new();
+    let mut current_heading = metadata.source.clone();
+    let mut current_lines = Vec::<String>::new();
+    let mut sections = Vec::<(String, String)>::new();
+
+    for line in body.lines() {
+        if let Some((level, title)) = private_markdown_heading(line) {
+            push_private_section(&mut sections, &current_heading, &mut current_lines);
+            breadcrumb.truncate(level.saturating_sub(1));
+            breadcrumb.push(title.to_string());
+            current_heading = breadcrumb.join(" > ");
+        } else {
+            current_lines.push(line.to_string());
+        }
+    }
+    push_private_section(&mut sections, &current_heading, &mut current_lines);
+    if sections.is_empty() {
+        bail!(
+            "private Markdown source '{}' has no content",
+            path.display()
+        );
+    }
+
+    sections
+        .into_iter()
+        .enumerate()
+        .map(|(index, (title, content))| {
+            let category = private_record_category(scope, path);
+            let id = stable_private_record_id(&format!(
+                "{}\n{}\n{}",
+                metadata.document_id, title, index
+            ));
+            Ok(IdentityRecord {
+                id,
+                category,
+                title,
+                content,
+                source: IdentitySource {
+                    label: metadata.source.clone(),
+                    revision: metadata.revision.clone(),
+                },
+                updated_at: metadata.updated_at.clone(),
+                valid_until: metadata.valid_until.clone(),
+                conflict_key: metadata.conflict_key.clone(),
+                tags: metadata.tags.clone(),
+            })
+        })
+        .collect()
+}
+
+fn push_private_section(
+    sections: &mut Vec<(String, String)>,
+    heading: &str,
+    lines: &mut Vec<String>,
+) {
+    let content = lines.join("\n").trim().to_string();
+    lines.clear();
+    if !content.is_empty() {
+        sections.push((heading.to_string(), content));
+    }
+}
+
+fn private_markdown_heading(line: &str) -> Option<(usize, &str)> {
+    let hashes = line
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
+    if !(1..=3).contains(&hashes) {
+        return None;
+    }
+    let title = line.get(hashes..)?.strip_prefix(' ')?.trim();
+    (!title.is_empty()).then_some((hashes, title))
+}
+
+fn private_record_category(scope: PrivateBundleScope, path: &Path) -> IdentityRecordCategory {
+    match scope {
+        PrivateBundleScope::Role => IdentityRecordCategory::TermsOfReference,
+        PrivateBundleScope::Project => IdentityRecordCategory::Other,
+        PrivateBundleScope::Person => match path.file_name().and_then(|value| value.to_str()) {
+            Some(name) if name.contains("capability") || name.contains("authority") => {
+                IdentityRecordCategory::Authority
+            }
+            Some(name) if name.contains("cv") => IdentityRecordCategory::Cv,
+            _ => IdentityRecordCategory::Other,
+        },
+    }
+}
+
+fn stable_private_record_id(seed: &str) -> Uuid {
+    let digest = Sha256::digest(seed.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
+}
+
+fn parse_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
+    let json = fs::read_to_string(path)
+        .with_context(|| format!("failed to read private JSON '{}'", path.display()))?;
+    serde_json::from_str(&json)
+        .with_context(|| format!("invalid private JSON in '{}'", path.display()))
+}
+
+fn resolve_private_path(root: &Path, parent: &Path, relative: &str) -> Result<PathBuf> {
+    let relative_path = Path::new(relative);
+    if relative_path.as_os_str().is_empty()
+        || relative_path.is_absolute()
+        || relative_path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        bail!("private harness paths must be safe, nonempty, and relative");
+    }
+    let resolved = parent
+        .join(relative_path)
+        .canonicalize()
+        .with_context(|| format!("private harness path '{}' does not exist", relative))?;
+    if !resolved.starts_with(root) {
+        bail!(
+            "private harness path '{}' escapes its corpus root",
+            relative
+        );
+    }
+    Ok(resolved)
 }
 
 async fn complete_provider_call(
@@ -705,7 +1052,7 @@ fn interview_evidence_workload_covers_negative_positive_and_cross_story_controls
         crate::professional_identity::validate_identity(&fixture.identity).unwrap();
         hash_identity_version(&fixture.identity).unwrap();
         let context =
-            retrieve_identity_context(&fixture.identity, fixture.question, Utc::now()).unwrap();
+            retrieve_identity_context(&fixture.identity, &fixture.question, Utc::now()).unwrap();
         assert!(
             !context.sources.is_empty(),
             "fixture {} must retrieve its Professional Identity evidence",
@@ -716,6 +1063,46 @@ fn interview_evidence_workload_covers_negative_positive_and_cross_story_controls
                 context.sources.len(),
                 2,
                 "cross-story fixture must supply both plausible stories"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires MEETING_ASSISTANT_LIVE_HARNESS_PROFILE_PATH pointing to a private workload"]
+fn private_interview_workload_loads_and_retrieves_required_sources() {
+    let path = std::env::var_os("MEETING_ASSISTANT_LIVE_HARNESS_PROFILE_PATH")
+        .map(PathBuf::from)
+        .expect("configure MEETING_ASSISTANT_LIVE_HARNESS_PROFILE_PATH");
+    let fixtures =
+        load_private_harness_fixtures(&path).expect("private interview workload should load");
+    assert!(!fixtures.is_empty());
+    for fixture in fixtures {
+        let context = retrieve_identity_context(&fixture.identity, &fixture.question, Utc::now())
+            .expect("private interview fixture should retrieve deterministically");
+        assert!(
+            !context.sources.is_empty(),
+            "fixture {} must retrieve at least one source",
+            fixture.id
+        );
+        let retrieved_ids = context
+            .sources
+            .iter()
+            .map(|source| source.record_id)
+            .collect::<HashSet<_>>();
+        for expected_title in &fixture.required_retrieved_titles {
+            let expected_id = fixture
+                .identity
+                .records
+                .iter()
+                .find(|record| record.title.ends_with(expected_title))
+                .map(|record| record.id)
+                .expect("required title should exist in the private identity");
+            assert!(
+                retrieved_ids.contains(&expected_id),
+                "fixture {} did not retrieve required source '{}'",
+                fixture.id,
+                expected_title
             );
         }
     }
@@ -817,15 +1204,29 @@ async fn reference_provider_does_not_invent_unsupported_interview_experience() {
         .timeout(Duration::from_secs(90))
         .build()
         .unwrap();
+    let private_workload_path =
+        std::env::var_os("MEETING_ASSISTANT_LIVE_HARNESS_PROFILE_PATH").map(PathBuf::from);
+    let (source_fixtures, harness_case) = if let Some(path) = private_workload_path {
+        (
+            load_private_harness_fixtures(&path)
+                .expect("private interview harness workload should be valid"),
+            "real_interview_profile_safety",
+        )
+    } else {
+        (
+            unsupported_experience_fixtures(),
+            "unsupported_interview_experience",
+        )
+    };
     let requested_fixture = std::env::var("MEETING_ASSISTANT_LIVE_HARNESS_FIXTURE")
         .ok()
         .filter(|fixture| !fixture.trim().is_empty());
-    let fixtures = unsupported_experience_fixtures()
+    let fixtures = source_fixtures
         .into_iter()
         .filter(|fixture| {
             requested_fixture
                 .as_deref()
-                .is_none_or(|requested| requested == fixture.id)
+                .is_none_or(|requested| requested == fixture.id.as_str())
         })
         .collect::<Vec<_>>();
     assert!(
@@ -838,15 +1239,35 @@ async fn reference_provider_does_not_invent_unsupported_interview_experience() {
         .map(|_| load_latest_replay_answers().expect("replay answers should be readable"));
     for fixture in &fixtures {
         let context =
-            retrieve_identity_context(&fixture.identity, fixture.question, Utc::now()).unwrap();
+            retrieve_identity_context(&fixture.identity, &fixture.question, Utc::now()).unwrap();
         assert!(
             !context.sources.is_empty(),
             "fixture {} must retrieve evidence before any provider call",
             fixture.id
         );
+        let retrieved_ids = context
+            .sources
+            .iter()
+            .map(|source| source.record_id)
+            .collect::<HashSet<_>>();
+        for expected_title in &fixture.required_retrieved_titles {
+            let expected_id = fixture
+                .identity
+                .records
+                .iter()
+                .find(|record| record.title.ends_with(expected_title))
+                .map(|record| record.id)
+                .expect("required retrieval title was validated while loading");
+            assert!(
+                retrieved_ids.contains(&expected_id),
+                "fixture {} must retrieve required source '{}'",
+                fixture.id,
+                expected_title
+            );
+        }
         if let Some(answers) = &replay_answers {
             assert!(
-                answers.contains_key(fixture.id),
+                answers.contains_key(fixture.id.as_str()),
                 "replay source has no prompt-v9 answer for fixture {}",
                 fixture.id
             );
@@ -858,13 +1279,13 @@ async fn reference_provider_does_not_invent_unsupported_interview_experience() {
         let mut failures = Vec::new();
         let identity_version_hash = hash_identity_version(&fixture.identity).unwrap();
         let identity_context =
-            retrieve_identity_context(&fixture.identity, fixture.question, Utc::now()).unwrap();
+            retrieve_identity_context(&fixture.identity, &fixture.question, Utc::now()).unwrap();
         if identity_context.sources.is_empty() {
             failures
                 .push("fixture_error: no Professional Identity record was retrieved".to_string());
         }
         let messages = build_answer_messages(
-            fixture.question,
+            &fixture.question,
             None,
             &profile_context,
             &identity_context.prompt_json,
@@ -872,7 +1293,7 @@ async fn reference_provider_does_not_invent_unsupported_interview_experience() {
         );
         let replayed_answer = replay_answers
             .as_ref()
-            .and_then(|answers| answers.get(fixture.id))
+            .and_then(|answers| answers.get(fixture.id.as_str()))
             .cloned();
         let generation_replayed = replayed_answer.is_some();
         let (generation_result, raw_answer, first_token_ms, generation_ms) =
@@ -917,9 +1338,9 @@ async fn reference_provider_does_not_invent_unsupported_interview_experience() {
                 provider::AssistMessage {
                     role: "user",
                     content: serde_json::to_string(&json!({
-                        "question": fixture.question,
+                        "question": &fixture.question,
                         "professional_identity_evidence": identity_context.prompt_json,
-                        "required_positive_control_fact": fixture.required_positive_fact,
+                        "required_positive_control_fact": fixture.required_positive_fact.as_deref(),
                         "answer": answer,
                     }))
                     .unwrap(),
@@ -942,9 +1363,10 @@ async fn reference_provider_does_not_invent_unsupported_interview_experience() {
                             .iter()
                             .map(|source| source.record_id)
                             .collect::<HashSet<_>>();
-                        if let Err(error) =
-                            validate_claim_audit(&normalized, fixture.required_positive_fact)
-                        {
+                        if let Err(error) = validate_claim_audit(
+                            &normalized,
+                            fixture.required_positive_fact.as_deref(),
+                        ) {
                             failures.push(format!("claim_audit_failure: {error}"));
                         } else if let Err(error) = validate_claim_sources(
                             &normalized,
@@ -966,14 +1388,15 @@ async fn reference_provider_does_not_invent_unsupported_interview_experience() {
         let record = json!({
             "timestamp_utc": Utc::now().to_rfc3339(),
             "git_sha": git_sha(),
-            "harness_case": "unsupported_interview_experience",
-            "fixture_id": fixture.id,
+            "harness_case": harness_case,
+            "fixture_id": &fixture.id,
             "requires_single_story_source": fixture.requires_single_story_source,
             "fixture_hash": sha256(serde_json::to_vec(&json!({
-                "question": fixture.question,
-                "identity": fixture.identity,
-                "required_positive_fact": fixture.required_positive_fact,
+                "question": &fixture.question,
+                "identity": &fixture.identity,
+                "required_positive_fact": fixture.required_positive_fact.as_deref(),
                 "requires_single_story_source": fixture.requires_single_story_source,
+                "required_retrieved_titles": &fixture.required_retrieved_titles,
             })).unwrap()),
             "prompt_template_version": ANSWER_SYSTEM_PROMPT_VERSION,
             "prompt_template_hash": sha256(SPECIALIZED_ANSWER_SYSTEM_PROMPT_TEMPLATE),
@@ -988,7 +1411,7 @@ async fn reference_provider_does_not_invent_unsupported_interview_experience() {
             "endpoint": config.endpoint,
             "model": config.model,
             "parameters": { "answer_max_tokens": AnswerContract::Specialized.max_tokens(), "audit_max_tokens": CLAIM_AUDIT_MAX_TOKENS, "temperature": 0.2, "attempts": 1 },
-            "question": fixture.question,
+            "question": &fixture.question,
             "answer": answer,
             "answer_replayed": generation_replayed,
             "replayed_answer_hash": replayed_answer_hash,

@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize, type PhysicalSize } from '@tauri-apps/api/dpi'
+import { shouldApplySnapshotResponse } from '@/lib/live-assist-snapshot'
 import {
   ChevronLeft,
   ChevronRight,
@@ -174,11 +175,31 @@ export default function LiveAssistPage() {
   const [identityManagerOpen, setIdentityManagerOpen] = useState(false)
   const paintMeasurementPending = useRef(new Set<string>())
   const previousWindowSize = useRef<PhysicalSize | null>(null)
+  const nextSnapshotRequestId = useRef(0)
+  const latestAppliedSnapshotRequestId = useRef(0)
+
+  const requestSnapshot = useCallback(async (work: () => Promise<AssistSnapshot>) => {
+    const requestId = ++nextSnapshotRequestId.current
+    const next = await work()
+    if (shouldApplySnapshotResponse(requestId, latestAppliedSnapshotRequestId.current)) {
+      latestAppliedSnapshotRequestId.current = requestId
+      setSnapshot(next)
+    }
+    return next
+  }, [])
 
   const refresh = useCallback(async () => {
-    const next = await invoke<AssistSnapshot>('assist_get_snapshot')
-    setSnapshot(next)
-  }, [])
+    await requestSnapshot(() => invoke<AssistSnapshot>('assist_get_snapshot'))
+  }, [requestSnapshot])
+
+  const run = useCallback(async (work: () => Promise<AssistSnapshot>) => {
+    try {
+      setActionError(null)
+      await requestSnapshot(work)
+    } catch (error) {
+      setActionError(errorMessage(error))
+    }
+  }, [requestSnapshot])
 
   useEffect(() => {
     let active = true
@@ -186,12 +207,11 @@ export default function LiveAssistPage() {
       try {
         const isVisible = await getCurrentWindow().isVisible()
         const [next, availableProfiles, availableIdentities] = await Promise.all([
-          invoke<AssistSnapshot>(isVisible ? 'assist_arm' : 'assist_get_snapshot'),
+          requestSnapshot(() => invoke<AssistSnapshot>(isVisible ? 'assist_arm' : 'assist_get_snapshot')),
           invoke<ProfileChoice[]>('assist_list_profiles'),
           invoke<IdentityChoice[]>('assist_list_identities'),
         ])
         if (!active) return
-        setSnapshot(next)
         setProfiles(availableProfiles)
         setIdentities(availableIdentities)
         if (next.selectedProfileId && next.selectedProfileVersionHash && next.selectedPlaybookId) {
@@ -208,8 +228,7 @@ export default function LiveAssistPage() {
     }
     void boot()
     const unlisten = listen('live-assist://show', () => {
-      void invoke<AssistSnapshot>('assist_arm')
-        .then(setSnapshot)
+      void requestSnapshot(() => invoke<AssistSnapshot>('assist_arm'))
         .catch(error => setActionError(errorMessage(error)))
     })
     const interval = window.setInterval(() => {
@@ -220,19 +239,18 @@ export default function LiveAssistPage() {
       window.clearInterval(interval)
       void unlisten.then(dispose => dispose())
     }
-  }, [refresh])
+  }, [refresh, requestSnapshot])
 
   useEffect(() => {
     const discardOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || !snapshot.capturing) return
       event.preventDefault()
-      void invoke<AssistSnapshot>('assist_discard_capture')
-        .then(setSnapshot)
+      void requestSnapshot(() => invoke<AssistSnapshot>('assist_discard_capture'))
         .catch(error => setActionError(errorMessage(error)))
     }
     window.addEventListener('keydown', discardOnEscape)
     return () => window.removeEventListener('keydown', discardOnEscape)
-  }, [snapshot.capturing])
+  }, [requestSnapshot, snapshot.capturing])
 
   useEffect(() => {
     if (snapshot.selectedProfileId && snapshot.selectedProfileVersionHash && snapshot.selectedPlaybookId) {
@@ -269,15 +287,14 @@ export default function LiveAssistPage() {
     const firstDeltaToPaintMs = Math.max(0, Date.now() - timings.firstDeltaAtUnixMs)
     const stopToVisibleTextMs = timings.stopToFirstDeltaMs + firstDeltaToPaintMs
     paintMeasurementPending.current.add(current.id)
-    void invoke<AssistSnapshot>('assist_record_first_paint', {
+    void requestSnapshot(() => invoke<AssistSnapshot>('assist_record_first_paint', {
       exchangeId: current.id,
       firstDeltaToPaintMs,
       stopToVisibleTextMs,
-    })
-      .then(setSnapshot)
+    }))
       .catch(() => undefined)
       .finally(() => paintMeasurementPending.current.delete(current.id))
-  }, [current])
+  }, [current, requestSnapshot])
 
   const canFollowUp = Boolean(
     current
@@ -289,15 +306,6 @@ export default function LiveAssistPage() {
   const captureSeconds = current?.status === 'capturing'
     ? Math.max(0, Math.floor((Date.now() - new Date(current.createdAt).getTime()) / 1000))
     : 0
-
-  const run = useCallback(async (work: () => Promise<AssistSnapshot>) => {
-    try {
-      setActionError(null)
-      setSnapshot(await work())
-    } catch (error) {
-      setActionError(errorMessage(error))
-    }
-  }, [])
 
   const openIdentityManager = async () => {
     try {
@@ -323,11 +331,21 @@ export default function LiveAssistPage() {
     setIdentities(availableIdentities)
     const value = `${saved.identityId}|${saved.versionHash}`
     setSelectedIdentity(value)
-    setSnapshot(await invoke<AssistSnapshot>('assist_set_identity', {
+    await requestSnapshot(() => invoke<AssistSnapshot>('assist_set_identity', {
       identityId: saved.identityId,
       identityVersionHash: saved.versionHash,
     }))
     await closeIdentityManager()
+  }
+
+  const hideOverlay = async () => {
+    try {
+      setActionError(null)
+      await invoke('assist_disarm')
+      await getCurrentWindow().hide()
+    } catch (error) {
+      setActionError(errorMessage(error))
+    }
   }
 
   const toggleCapture = useCallback((kind: 'new_question' | 'follow_up') => {
@@ -396,7 +414,7 @@ export default function LiveAssistPage() {
               ? `Cloud · ${snapshot.providerName ?? 'provider'} · ${compactModelName(snapshot.modelName)}`
               : 'Private'}
           </button>
-          <button type="button" onClick={() => void getCurrentWindow().hide()} className="rounded p-1.5 text-slate-400 hover:bg-white/10 hover:text-white" aria-label="Hide Live Assist">
+          <button type="button" onClick={() => void hideOverlay()} className="rounded p-1.5 text-slate-400 hover:bg-white/10 hover:text-white" aria-label="Hide Live Assist">
             <EyeOff className="h-4 w-4" />
           </button>
           <button type="button" onClick={() => void getCurrentWindow().close()} className="rounded p-1.5 text-slate-400 hover:bg-red-500/20 hover:text-red-300" aria-label="Close Live Assist">

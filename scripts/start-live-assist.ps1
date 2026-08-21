@@ -6,12 +6,20 @@ $ErrorActionPreference = "Stop"
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $localEnvironmentPath = Join-Path $repositoryRoot ".env"
-if (-not [Environment]::GetEnvironmentVariable("MEETING_ASSISTANT_LIVE_API_KEY", "Process") -and (Test-Path -LiteralPath $localEnvironmentPath)) {
-    foreach ($line in Get-Content -LiteralPath $localEnvironmentPath) {
+$localProviderPath = Join-Path $repositoryRoot ".env.provider"
+$allowedLocalVariables = @(
+    "MEETING_ASSISTANT_LIVE_API_KEY",
+    "MEETING_ASSISTANT_LIVE_ENDPOINT",
+    "MEETING_ASSISTANT_LIVE_MODEL"
+)
+foreach ($environmentPath in @($localEnvironmentPath, $localProviderPath)) {
+    if (-not (Test-Path -LiteralPath $environmentPath)) { continue }
+    foreach ($line in Get-Content -LiteralPath $environmentPath) {
         $separator = $line.IndexOf('=')
         if ($separator -le 0) { continue }
         $name = $line.Substring(0, $separator).Trim()
-        if ($name -ne "MEETING_ASSISTANT_LIVE_API_KEY") { continue }
+        if ($name -notin $allowedLocalVariables) { continue }
+        if ([Environment]::GetEnvironmentVariable($name, "Process")) { continue }
         $value = $line.Substring($separator + 1).Trim().Trim('"').Trim("'")
         if ($value) { [Environment]::SetEnvironmentVariable($name, $value, "Process") }
     }

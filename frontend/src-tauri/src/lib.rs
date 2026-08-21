@@ -470,9 +470,6 @@ pub fn run() {
             }
             _app.manage(app_paths);
 
-            if let Err(error) = live_assist::register_global_shortcuts(_app.handle()) {
-                log::warn!("Failed to register Live Assist shortcuts: {error}");
-            }
             if std::env::args().any(|argument| argument == "--live-assist") {
                 live_assist::enter_overlay_mode(_app.handle());
             }
@@ -578,6 +575,19 @@ pub fn run() {
                         log::error!("Failed to hide main window on close request: {}", e);
                     } else {
                         log::info!("Main window hidden to tray on close request");
+                    }
+                } else if window.label() == "live-assist" {
+                    api.prevent_close();
+                    let state = window.state::<live_assist::LiveAssistState>();
+                    match live_assist::deactivate(window.app_handle(), &state) {
+                        Ok(()) => {
+                            if let Err(error) = window.hide() {
+                                log::error!("Failed to hide Live Assist: {error}");
+                            }
+                        }
+                        Err(error) => {
+                            log::error!("Failed to deactivate Live Assist before hiding: {error}");
+                        }
                     }
                 }
             }

@@ -215,9 +215,42 @@ fn word_count(output: &str) -> usize {
 pub fn register_global_shortcuts<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
-    app.global_shortcut().register(CAPTURE_SHORTCUT)?;
-    app.global_shortcut().register(FOLLOW_UP_SHORTCUT)?;
+    let shortcuts = app.global_shortcut();
+    let capture_was_registered = shortcuts.is_registered(CAPTURE_SHORTCUT);
+    if !capture_was_registered {
+        shortcuts.register(CAPTURE_SHORTCUT)?;
+    }
+    if !shortcuts.is_registered(FOLLOW_UP_SHORTCUT) {
+        if let Err(error) = shortcuts.register(FOLLOW_UP_SHORTCUT) {
+            if !capture_was_registered {
+                let _ = shortcuts.unregister(CAPTURE_SHORTCUT);
+            }
+            return Err(error.into());
+        }
+    }
     Ok(())
+}
+
+pub fn unregister_global_shortcuts<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let shortcuts = app.global_shortcut();
+    let mut errors = Vec::new();
+    for shortcut in [CAPTURE_SHORTCUT, FOLLOW_UP_SHORTCUT] {
+        if shortcuts.is_registered(shortcut) {
+            if let Err(error) = shortcuts.unregister(shortcut) {
+                errors.push(format!("{shortcut}: {error}"));
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "failed to unregister Live Assist shortcuts: {}",
+            errors.join(", ")
+        ))
+    }
 }
 
 pub fn handle_global_shortcut<R: Runtime>(
@@ -781,12 +814,28 @@ pub async fn assist_arm<R: Runtime>(
     state: tauri::State<'_, LiveAssistState>,
 ) -> Result<AssistSnapshot, String> {
     state.arm(&app).await.map_err(|error| error.to_string())?;
+    if let Err(error) = register_global_shortcuts(&app) {
+        let _ = state.disarm();
+        return Err(format!(
+            "Live Assist could not reserve its shortcuts: {error}"
+        ));
+    }
     Ok(state.snapshot())
 }
 
 #[tauri::command]
-pub fn assist_disarm(state: tauri::State<'_, LiveAssistState>) -> Result<(), String> {
-    state.disarm().map_err(|error| error.to_string())
+pub fn assist_disarm<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, LiveAssistState>,
+) -> Result<(), String> {
+    deactivate(&app, &state).map_err(|error| error.to_string())
+}
+
+pub fn deactivate<R: Runtime>(app: &AppHandle<R>, state: &LiveAssistState) -> Result<()> {
+    let shortcut_result = unregister_global_shortcuts(app);
+    let disarm_result = state.disarm();
+    shortcut_result?;
+    disarm_result
 }
 
 #[tauri::command]

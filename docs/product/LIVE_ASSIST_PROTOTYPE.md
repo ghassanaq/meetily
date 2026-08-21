@@ -11,6 +11,7 @@ It does not replace or modify Meetily's existing recording, transcription, works
 - The dedicated Assist stream retains the latest 60 seconds of system audio in RAM.
 - Pressing **F8** once starts a new question capture. Four seconds before the press are included. Pressing **F8** again closes the clip and starts local transcription.
 - Pressing **F9** once starts a follow-up. Pressing **F9** again closes the clip and starts local transcription. Its parent is the exchange displayed when capture starts; later navigation cannot retarget it.
+- F8 and F9 are registered only while the Live Assist overlay is armed. Hiding or closing the overlay disarms audio and releases both system-wide keys; reopening and successfully arming the overlay reserves them again.
 - **Escape** discards an active capture. Restart is explicit and never silently replaces or submits the wrong clip. A capture auto-submits at 50 seconds, before the 60-second RAM window can be exhausted.
 - **General guidance** streams a two-or-three-sentence first-person response written as the user's own ready-to-speak words. It contains no coaching labels or instructions. Longer detail remains a separate, on-demand provider request for this general mode.
 - An explicitly selected **specialized lens** streams one continuous first-person plain-text paragraph of 200–300 words. Its first two sentences are prompted as a 40–70-word complete lead, followed by a natural expansion in the same paragraph. Headings, bullets, numbered lists, line breaks, Markdown, coaching labels, and assistant meta-language are forbidden. The legacy detail request is hidden and rejected for specialized responses.
@@ -32,7 +33,7 @@ Professional identity is a separate product layer defined in [PROFESSIONAL_IDENT
 
 ## Local configuration
 
-The launcher contains no key and never prints one. It first uses an inherited process variable; if that is absent, it loads only `MEETING_ASSISTANT_LIVE_API_KEY` from the repository root's ignored `.env` file. It does not execute or interpolate the file as PowerShell.
+The launcher contains no key and never prints one. It first uses inherited process variables. For absent values, it loads only the allowlisted `MEETING_ASSISTANT_LIVE_API_KEY`, `MEETING_ASSISTANT_LIVE_ENDPOINT`, and `MEETING_ASSISTANT_LIVE_MODEL` names from the repository root's ignored `.env` and `.env.provider` files. It ignores every other name and does not execute or interpolate either file as PowerShell. Keeping the API key in `.env` and the non-secret provider binding in `.env.provider` lets secure key setup update the credential without changing the selected endpoint or model.
 
 Required variable:
 
@@ -62,7 +63,7 @@ Run the prototype in five real meetings:
 
 Proceed only if the suggestions are actually used. Revise delivery if the content is useful but late or distracting. Stop the Live Assist slice if the answers are consistently ignored even when correctly captured.
 
-Provider behavior is measured separately from deterministic CI. Run `scripts/test-live-assist-voice.cmd` on the reference PC to exercise the production prompt and streaming provider path against the unspoken-Friday-commitment fixture. The ignored harness rejects coaching prefixes and assistant meta-language, verifies that an unspoken draft is not converted into meeting history, and appends timestamped prompt/model/latency results under the ignored `target/` directory without recording the API key.
+Provider behavior is measured separately from deterministic CI. Run `scripts/test-live-assist-voice.cmd` on the reference PC to exercise the production prompt and streaming provider path against the synthetic fixtures. The ignored harness rejects coaching prefixes and assistant meta-language, verifies that an unspoken draft is not converted into meeting history, and appends timestamped prompt/model/latency results under the ignored `target/` directory without recording the API key. A separate private run may set `MEETING_ASSISTANT_LIVE_HARNESS_PROFILE_PATH` to an ignored workload JSON file. That file may reference only relative manifest, bundle, and Markdown paths below its own corpus root; the harness rejects absolute paths and traversal and preserves Markdown sections as separately attributable identity records. Its ignored JSONL result stores the questions, generated answers, audits, and retrieved IDs, but does not serialize the raw identity object or source documents.
 
 ## Deliberate non-goals
 
