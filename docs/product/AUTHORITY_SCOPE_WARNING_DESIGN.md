@@ -1,7 +1,7 @@
 # Authority-Scope Warning Design
 
-Status: reviewed design; no implementation authorised
-Date: 2026-08-21
+Status: implemented, activated for the tested immutable identity version, and manually verified
+Date: 2026-08-22
 Scope: advisory detection of autobiographical authority expansion in Live Assist
 Complements: `PROFESSIONAL_IDENTITY_AND_LENSES_DESIGN.md`
 

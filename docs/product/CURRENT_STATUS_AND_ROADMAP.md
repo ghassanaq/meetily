@@ -32,6 +32,7 @@ This file is the concise operational view of what is done and what comes next. P
 - Completed five private offline authority trials without tracking answer text. All five accepted answers remained true negatives; the private gate reported zero false positives and zero false negatives for the enrolled rules.
 - Implemented the approved advisory path with policy state pinned to the exact immutable identity-version hash. New constrained versions default to offline evaluation and require the typed confirmation `ACTIVATE AUTHORITY WARNINGS` before Live Assist can display results.
 - Added post-completion, local-only authority diagnostics separate from format warnings; amber excluded-object highlighting; exchange-local dismissal with aggregate counters; and source metadata with excerpts revealed only on demand. Answers, sentences, aliases, and excerpts are never persisted by the policy tables.
+- Manually verified advisory activation on the rebuilt app: five-rule clean-state reporting, exact excluded-object highlighting on a controlled positive claim, metadata-first evidence inspection, excerpts only after explicit request, exchange-local dismissal, and warning recurrence on a later exchange all passed. A camelCase snapshot-contract defect found during this check was fixed in `a93c797` and pinned by a regression test.
 
 ## Current finding
 
@@ -39,10 +40,9 @@ Broad professional-introduction composition now works against the active context
 
 ## Next
 
-1. **Manually verify advisory display.** Activate warnings for the tested identity version, run one synthetic positive claim and one accepted negative claim, then confirm amber span highlighting, honest clean-state copy, exchange-local dismissal, and evidence-on-demand.
+1. **Run the use loop.** Freeze provider, identity version, lens/depth, and compose profile; run a mock interview and then five real meeting/interview trials. Record question, word count, used/not used, answer fit, continuity correctness, warning usefulness, and one-line missing-context notes.
 2. **Keep learning from dismissals.** Review aggregate dismissal counts after real use. Change rules only through a new immutable identity version; never turn a dismissal into persisted suppression.
 3. **Extend compose profiles only from observed misses.** Add a separate governed brief for suitability or career-arc questions only if real trials show that the professional-introduction contract cannot serve them.
-4. **Run the use loop.** Freeze provider, identity version, lens/depth, and compose profile; run a mock interview and then five real meeting/interview trials. Record question, word count, used/not used, answer fit, continuity correctness, warning usefulness, and one-line missing-context notes.
 
 ## Later
 
