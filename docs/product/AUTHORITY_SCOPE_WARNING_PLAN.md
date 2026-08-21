@@ -1,6 +1,6 @@
 # Authority-Scope Warning Implementation Plan
 
-Status: Checkpoints A, B, and C implemented; final release/manual verification remains
+Status: Checkpoints A, B, and C implemented; automated/release verification passed; manual UI verification remains
 Date: 2026-08-21
 Design: `AUTHORITY_SCOPE_WARNING_DESIGN.md`
 

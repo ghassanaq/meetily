@@ -489,7 +489,7 @@ For private testing details, inspect the ignored corpus README, retrieval result
 - Authority-scope Checkpoints A and B are locally committed. The private five-answer gate passed with five true negatives and no tracked answer text.
 - Ghassan explicitly approved Checkpoint C. Version-bound offline/advisory policy state, aggregate dismissal feedback, post-completion local matching, exact-exchange dismissal/evidence commands, and the three-state Live Assist/Settings UI are implemented.
 - Focused authority tests pass, all 18 frontend tests pass, the Next production build passes, the full Rust library suite passes with 353 passed and 7 intentionally ignored, and all five protected migrations are LF-only.
-- The remaining actions are the release build, relaunch, manual positive/negative UI verification, and commit/review. Advisory activation must remain explicit and tied to the exact immutable identity hash.
+- Checkpoint C is committed as `0630537`. The custom-protocol release build passed and the exact rebuilt executable was relaunched successfully. Manual positive/negative UI verification remains. Advisory activation must remain explicit and tied to the exact immutable identity hash.
 
 ## 17. Final instruction
 
