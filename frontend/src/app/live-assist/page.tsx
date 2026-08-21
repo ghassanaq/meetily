@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize, type PhysicalSize } from '@tauri-apps/api/dpi'
+import { displayLiveAssistAnswer } from '@/lib/live-assist-answer'
 import { shouldApplySnapshotResponse } from '@/lib/live-assist-snapshot'
 import {
   ChevronLeft,
@@ -511,7 +512,7 @@ export default function LiveAssistPage() {
               {current.answer && (
                 <>
                   <h1 className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">Your response</h1>
-                  <p className="max-w-3xl text-lg font-semibold leading-7 text-white">{current.answer}</p>
+                  <p className="max-w-3xl text-lg font-semibold leading-7 text-white">{displayLiveAssistAnswer(current.answer)}</p>
                   {current.identityId && (
                     <p className="mt-2 max-w-3xl text-[10px] leading-4 text-slate-500">
                       {current.groundingSources.length > 0

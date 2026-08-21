@@ -96,17 +96,43 @@ struct CompletedAnswerValidation {
     format_warnings: Vec<String>,
 }
 
+const OUTER_MARKDOWN_EMPHASIS_REMOVED_WARNING: &str = "outer_markdown_emphasis_removed";
+
+fn normalize_outer_markdown_emphasis(output: &str) -> (&str, bool) {
+    let trimmed = output.trim();
+    for marker in ["**", "__", "*", "_"] {
+        if trimmed.len() <= marker.len() * 2
+            || !trimmed.starts_with(marker)
+            || !trimmed.ends_with(marker)
+        {
+            continue;
+        }
+
+        let inner = trimmed[marker.len()..trimmed.len() - marker.len()].trim();
+        if !inner.is_empty() {
+            return (inner, true);
+        }
+    }
+
+    (trimmed, false)
+}
+
 fn validate_completed_answer(
     output: &str,
     contract: AnswerContract,
 ) -> Result<CompletedAnswerValidation> {
-    validate_speakable_response(output)?;
-    let trimmed = output.trim();
+    let (trimmed, outer_emphasis_removed) = normalize_outer_markdown_emphasis(output);
+    validate_speakable_response(trimmed)?;
+    let mut format_warnings = if outer_emphasis_removed {
+        vec![OUTER_MARKDOWN_EMPHASIS_REMOVED_WARNING.to_string()]
+    } else {
+        Vec::new()
+    };
     if contract == AnswerContract::General {
         return Ok(CompletedAnswerValidation {
             normalized_answer: trimmed.to_string(),
             word_count: word_count(trimmed).try_into().unwrap_or(u32::MAX),
-            format_warnings: Vec::new(),
+            format_warnings,
         });
     }
 
@@ -126,11 +152,10 @@ fn validate_completed_answer(
         return Ok(CompletedAnswerValidation {
             normalized_answer,
             word_count: words.try_into().unwrap_or(u32::MAX),
-            format_warnings: Vec::new(),
+            format_warnings,
         });
     }
 
-    let mut format_warnings = Vec::new();
     if !(60..=300).contains(&words) {
         format_warnings.push(format!(
             "specialized_word_count_outside_outer_bounds: observed={words}, expected=60..=300"
@@ -144,6 +169,11 @@ fn validate_completed_answer(
 }
 
 fn validate_speakable_response(output: &str) -> Result<()> {
+    if output.contains("**") || output.contains("__") || output.contains('`') {
+        return Err(anyhow!(
+            "response contains Markdown formatting instead of plain text"
+        ));
+    }
     let normalized = output
         .trim_start_matches(|character: char| {
             character.is_whitespace()
@@ -2078,6 +2108,18 @@ mod tests {
 
         let coaching = format!("You can say {valid}");
         assert!(validate_completed_answer(&coaching, AnswerContract::Specialized).is_err());
+        let markdown = format!("**{valid}**");
+        let normalized = validate_completed_answer(&markdown, AnswerContract::Specialized)
+            .expect("matching outer emphasis is safely removable");
+        assert_eq!(normalized.normalized_answer, valid);
+        assert_eq!(
+            normalized.format_warnings,
+            vec![OUTER_MARKDOWN_EMPHASIS_REMOVED_WARNING]
+        );
+        let inline_markdown = valid.replacen("will", "**will**", 1);
+        let error = validate_completed_answer(&inline_markdown, AnswerContract::Specialized)
+            .expect_err("inline Markdown remains invalid");
+        assert!(error.to_string().contains("Markdown formatting"));
         let abstention =
             validate_completed_answer(INSUFFICIENT_CONTEXT_RESPONSE, AnswerContract::Specialized)
                 .unwrap();
