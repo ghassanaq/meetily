@@ -15,11 +15,15 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    validate_identity, IdentityRecord, IdentityRecordCategory, IdentitySource,
-    ProfessionalIdentityHeader, ProfessionalIdentityVersion, PROFESSIONAL_IDENTITY_SCHEMA_VERSION,
+    validate_identity, AuthorityActionFamily, AuthorityConstraint, IdentityRecord,
+    IdentityRecordCategory, IdentitySource, ProfessionalIdentityHeader,
+    ProfessionalIdentityVersion,
 };
 
-const IMPORT_SCHEMA_VERSION: u32 = 1;
+const MIN_IMPORT_SCHEMA_VERSION: u32 = 1;
+const IMPORT_SCHEMA_VERSION: u32 = 2;
+const BUNDLE_SCHEMA_VERSION: u32 = 1;
+const DOCUMENT_SCHEMA_VERSION: u32 = 1;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_MARKDOWN_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -41,6 +45,35 @@ struct ContextManifest {
     identity_bundle: String,
     role_bundle: String,
     project_bundles: Vec<String>,
+    #[serde(default)]
+    authority_constraints: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityConstraintSidecar {
+    schema_version: u32,
+    rules: Vec<AuthoredAuthorityConstraint>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoredAuthorityConstraint {
+    id: String,
+    label: String,
+    #[serde(default)]
+    contexts: Vec<String>,
+    action_families: Vec<AuthorityActionFamily>,
+    permitted_objects: Vec<String>,
+    excluded_objects: Vec<String>,
+    evidence: Vec<AuthorityEvidenceSelector>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityEvidenceSelector {
+    source_label: String,
+    title: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,11 +121,16 @@ pub fn load_context_manifest(
         .ok_or_else(|| anyhow!("context manifest has no parent directory"))?
         .canonicalize()?;
     let manifest: ContextManifest = parse_json_file(&manifest_path)?;
-    if manifest.schema_version != IMPORT_SCHEMA_VERSION {
+    if !(MIN_IMPORT_SCHEMA_VERSION..=IMPORT_SCHEMA_VERSION).contains(&manifest.schema_version) {
         bail!(
             "unsupported context manifest schema version {}",
             manifest.schema_version
         );
+    }
+    if manifest.schema_version == MIN_IMPORT_SCHEMA_VERSION
+        && manifest.authority_constraints.is_some()
+    {
+        bail!("context manifest schema version 1 cannot declare authority constraints");
     }
     if manifest.context_id.trim().is_empty() || manifest.name.trim().is_empty() {
         bail!("context manifest must have a nonempty context_id and name");
@@ -115,12 +153,19 @@ pub fn load_context_manifest(
     for bundle in &manifest.project_bundles {
         records.extend(load_bundle(&root, bundle, BundleScope::Project)?);
     }
+    let authority_constraints = manifest
+        .authority_constraints
+        .as_deref()
+        .map(|relative| load_authority_constraints(&root, relative, &records))
+        .transpose()?
+        .unwrap_or_default();
 
     let identity = ProfessionalIdentityVersion {
-        schema_version: PROFESSIONAL_IDENTITY_SCHEMA_VERSION,
+        schema_version: manifest.schema_version,
         identity: identity_header,
         records,
         projects: Vec::new(),
+        authority_constraints,
     };
     validate_identity(&identity)?;
 
@@ -129,6 +174,67 @@ pub fn load_context_manifest(
         name: manifest.name,
         identity,
     })
+}
+
+fn load_authority_constraints(
+    root: &Path,
+    relative_path: &str,
+    records: &[IdentityRecord],
+) -> Result<Vec<AuthorityConstraint>> {
+    let path = resolve_relative_path(root, root, relative_path)?;
+    if path.extension().and_then(|value| value.to_str()) != Some("json") {
+        bail!("authority constraint sidecar must be a JSON file");
+    }
+    let sidecar: AuthorityConstraintSidecar = parse_json_file(&path)?;
+    if sidecar.schema_version != 1 {
+        bail!(
+            "unsupported authority constraint sidecar schema version {}",
+            sidecar.schema_version
+        );
+    }
+    if sidecar.rules.is_empty() {
+        bail!("declared authority constraint sidecar must contain at least one rule");
+    }
+
+    sidecar
+        .rules
+        .into_iter()
+        .enumerate()
+        .map(|(rule_index, rule)| {
+            if rule.evidence.is_empty() {
+                bail!(
+                    "authority constraint rule '{}' must reference evidence",
+                    rule.id
+                );
+            }
+            let mut evidence_record_ids = Vec::new();
+            for (selector_index, selector) in rule.evidence.iter().enumerate() {
+                let matches = records
+                    .iter()
+                    .filter(|record| {
+                        record.source.label == selector.source_label
+                            && record.title == selector.title
+                    })
+                    .collect::<Vec<_>>();
+                if matches.len() != 1 {
+                    bail!(
+                        "authority constraint rules[{rule_index}].evidence[{selector_index}] must resolve to exactly one record, found {}",
+                        matches.len()
+                    );
+                }
+                evidence_record_ids.push(matches[0].id);
+            }
+            Ok(AuthorityConstraint {
+                id: rule.id,
+                label: rule.label,
+                contexts: rule.contexts,
+                action_families: rule.action_families,
+                permitted_objects: rule.permitted_objects,
+                excluded_objects: rule.excluded_objects,
+                evidence_record_ids,
+            })
+        })
+        .collect()
 }
 
 pub fn stable_context_identity_id(context_id: &str) -> Uuid {
@@ -142,7 +248,7 @@ fn load_bundle(
 ) -> Result<Vec<IdentityRecord>> {
     let bundle_path = resolve_relative_path(root, root, relative_path)?;
     let bundle: BundleManifest = parse_json_file(&bundle_path)?;
-    if bundle.schema_version != IMPORT_SCHEMA_VERSION {
+    if bundle.schema_version != BUNDLE_SCHEMA_VERSION {
         bail!(
             "unsupported bundle schema version {} in '{}'",
             bundle.schema_version,
@@ -182,7 +288,7 @@ fn parse_markdown(path: &Path, scope: BundleScope) -> Result<Vec<IdentityRecord>
         .ok_or_else(|| anyhow!("Markdown source has unterminated YAML frontmatter"))?;
     let metadata: DocumentMetadata = serde_yaml_ng::from_str(&rest[..frontmatter_end])
         .context("invalid Markdown frontmatter")?;
-    if metadata.schema_version != IMPORT_SCHEMA_VERSION
+    if metadata.schema_version != DOCUMENT_SCHEMA_VERSION
         || metadata.document_id.trim().is_empty()
         || metadata.source.trim().is_empty()
         || metadata.revision.trim().is_empty()
@@ -369,7 +475,80 @@ mod tests {
 
         let imported = load_context_manifest(&root.join("context.json"), None).unwrap();
         assert_eq!(imported.identity.records.len(), 2);
+        assert_eq!(imported.identity.schema_version, 1);
+        assert!(imported.identity.authority_constraints.is_empty());
         assert_eq!(imported.context_id, "role");
         assert!(resolve_relative_path(root, root, "../outside.json").is_err());
+
+        fs::write(
+            root.join("authority-rules.json"),
+            r#"{"schema_version":1,"rules":[{"id":"work-boundary","label":"Work boundary","contexts":[],"action_families":["manage"],"permitted_objects":["workstream"],"excluded_objects":["whole operation"],"evidence":[{"source_label":"CV","title":"Work"}]}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("context.json"),
+            r#"{"schema_version":2,"context_id":"role","name":"Role","identity":{"display_name":"Person","role_title":"Role","organization":"Org","professional_summary":"Summary"},"identity_bundle":"identity/bundle.json","role_bundle":"identity/role-bundle.json","project_bundles":[],"authority_constraints":"authority-rules.json"}"#,
+        )
+        .unwrap();
+        let imported_v2 = load_context_manifest(&root.join("context.json"), None).unwrap();
+        assert_eq!(imported_v2.identity.schema_version, 2);
+        assert_eq!(imported_v2.identity.authority_constraints.len(), 1);
+        assert_eq!(
+            imported_v2.identity.authority_constraints[0].evidence_record_ids,
+            vec![stable_uuid("cv\nWork\n0")]
+        );
+        let serialized = serde_json::to_string(&imported_v2.identity).unwrap();
+        assert!(!serialized.contains("authority-rules.json"));
+        assert!(!serialized.contains("source.md"));
+
+        fs::write(
+            root.join("authority-rules.json"),
+            r#"{"schema_version":1,"rules":[{"id":"work-boundary","label":"Work boundary","contexts":[],"action_families":["manage"],"permitted_objects":["workstream"],"excluded_objects":["whole operation"],"evidence":[{"source_label":"CV","title":"Missing"}]}]}"#,
+        )
+        .unwrap();
+        assert!(load_context_manifest(&root.join("context.json"), None).is_err());
+
+        fs::write(
+            root.join("identity/duplicate.md"),
+            "---\nschema_version: 1\ndocument_id: duplicate\nsource: CV\nrevision: current\nupdated_at: 2026-08-20T00:00:00Z\nvalid_until: null\nconflict_key: null\ntags: [experience]\n---\n# Work\nA second record with the same selector.",
+        )
+        .unwrap();
+        fs::write(
+            root.join("identity/bundle.json"),
+            r#"{"schema_version":1,"bundle_id":"person","name":"Person","sources":["source.md","duplicate.md"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("authority-rules.json"),
+            r#"{"schema_version":1,"rules":[{"id":"work-boundary","label":"Work boundary","contexts":[],"action_families":["manage"],"permitted_objects":["workstream"],"excluded_objects":["whole operation"],"evidence":[{"source_label":"CV","title":"Work"}]}]}"#,
+        )
+        .unwrap();
+        assert!(load_context_manifest(&root.join("context.json"), None).is_err());
+
+        fs::write(
+            root.join("context.json"),
+            r#"{"schema_version":2,"context_id":"role","name":"Role","identity":{"display_name":"Person","role_title":"Role","organization":"Org","professional_summary":"Summary"},"identity_bundle":"identity/bundle.json","role_bundle":"identity/role-bundle.json","project_bundles":[],"authority_constraints":"../authority-rules.json"}"#,
+        )
+        .unwrap();
+        assert!(load_context_manifest(&root.join("context.json"), None).is_err());
+
+        fs::write(
+            root.join("context.json"),
+            r#"{"schema_version":2,"context_id":"role","name":"Role","identity":{"display_name":"Person","role_title":"Role","organization":"Org","professional_summary":"Summary"},"identity_bundle":"identity/bundle.json","role_bundle":"identity/role-bundle.json","project_bundles":[],"authority_constraints":"authority-rules.txt"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("authority-rules.txt"),
+            r#"{"schema_version":1,"rules":[]}"#,
+        )
+        .unwrap();
+        assert!(load_context_manifest(&root.join("context.json"), None).is_err());
+
+        fs::write(
+            root.join("context.json"),
+            r#"{"schema_version":1,"context_id":"role","name":"Role","identity":{"display_name":"Person","role_title":"Role","organization":"Org","professional_summary":"Summary"},"identity_bundle":"identity/bundle.json","role_bundle":"identity/role-bundle.json","project_bundles":[],"authority_constraints":"authority-rules.json"}"#,
+        )
+        .unwrap();
+        assert!(load_context_manifest(&root.join("context.json"), None).is_err());
     }
 }

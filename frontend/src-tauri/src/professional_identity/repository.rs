@@ -324,6 +324,7 @@ mod tests {
                 tags: vec!["approval".to_string()],
             }],
             projects: vec![],
+            authority_constraints: vec![],
         }
     }
 

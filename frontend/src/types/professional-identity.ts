@@ -15,7 +15,7 @@ export type StoredProfessionalIdentityVersion = {
 }
 
 export type ProfessionalIdentityVersion = {
-  schema_version: 1
+  schema_version: 1 | 2
   identity: {
     display_name: string
     role_title: string
@@ -49,5 +49,14 @@ export type ProfessionalIdentityVersion = {
       conflict_key: string | null
       tags: string[]
     }>
+  }>
+  authority_constraints?: Array<{
+    id: string
+    label: string
+    contexts: string[]
+    action_families: Array<'manage' | 'lead' | 'own' | 'oversee' | 'responsible_for' | 'approve' | 'decide'>
+    permitted_objects: string[]
+    excluded_objects: string[]
+    evidence_record_ids: string[]
   }>
 }

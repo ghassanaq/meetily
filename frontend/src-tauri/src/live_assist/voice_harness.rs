@@ -401,6 +401,7 @@ fn synthetic_identity(
             tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
         }],
         projects: Vec::new(),
+        authority_constraints: Vec::new(),
     }
 }
 

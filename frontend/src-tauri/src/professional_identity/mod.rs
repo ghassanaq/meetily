@@ -5,6 +5,7 @@
 //! grants. Retrieval returns source metadata alongside prompt context so the UI
 //! never relies on model-authored provenance.
 
+pub(crate) mod authority_scope;
 pub mod commands;
 mod composition;
 pub mod markdown_import;
@@ -20,7 +21,8 @@ use uuid::Uuid;
 
 use crate::expert_profiles::hashing::canonical_json;
 
-pub const PROFESSIONAL_IDENTITY_SCHEMA_VERSION: u32 = 1;
+pub const MIN_PROFESSIONAL_IDENTITY_SCHEMA_VERSION: u32 = 1;
+pub const PROFESSIONAL_IDENTITY_SCHEMA_VERSION: u32 = 2;
 const IDENTITY_HASH_DOMAIN: &[u8] = b"meetily-professional-identity-v1\0";
 const MAX_JSON_BYTES: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 256;
@@ -29,6 +31,10 @@ const MAX_PROJECT_FACTS: usize = 128;
 const MAX_TAGS: usize = 32;
 const MAX_STRING_BYTES: usize = 32 * 1024;
 const MAX_RETRIEVED_SOURCES: usize = 8;
+const MAX_AUTHORITY_CONSTRAINTS: usize = 64;
+const MAX_AUTHORITY_ALIASES: usize = 16;
+const MAX_AUTHORITY_ALIAS_BYTES: usize = 128;
+const MAX_AUTHORITY_LABEL_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -37,6 +43,32 @@ pub struct ProfessionalIdentityVersion {
     pub identity: ProfessionalIdentityHeader,
     pub records: Vec<IdentityRecord>,
     pub projects: Vec<IdentityProject>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authority_constraints: Vec<AuthorityConstraint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorityConstraint {
+    pub id: String,
+    pub label: String,
+    pub contexts: Vec<String>,
+    pub action_families: Vec<AuthorityActionFamily>,
+    pub permitted_objects: Vec<String>,
+    pub excluded_objects: Vec<String>,
+    pub evidence_record_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorityActionFamily {
+    Manage,
+    Lead,
+    Own,
+    Oversee,
+    ResponsibleFor,
+    Approve,
+    Decide,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -165,10 +197,19 @@ pub fn parse_identity_json(input: &str) -> Result<ProfessionalIdentityVersion> {
 }
 
 pub fn validate_identity(profile: &ProfessionalIdentityVersion) -> Result<()> {
-    if profile.schema_version != PROFESSIONAL_IDENTITY_SCHEMA_VERSION {
+    if !(MIN_PROFESSIONAL_IDENTITY_SCHEMA_VERSION..=PROFESSIONAL_IDENTITY_SCHEMA_VERSION)
+        .contains(&profile.schema_version)
+    {
         return Err(anyhow!(
-            "expected professional identity schema version {PROFESSIONAL_IDENTITY_SCHEMA_VERSION}, got {}",
+            "expected professional identity schema version {MIN_PROFESSIONAL_IDENTITY_SCHEMA_VERSION}..={PROFESSIONAL_IDENTITY_SCHEMA_VERSION}, got {}",
             profile.schema_version
+        ));
+    }
+    if profile.schema_version == MIN_PROFESSIONAL_IDENTITY_SCHEMA_VERSION
+        && !profile.authority_constraints.is_empty()
+    {
+        return Err(anyhow!(
+            "professional identity schema version 1 cannot contain authority constraints"
         ));
     }
     validate_text("identity.display_name", &profile.identity.display_name)?;
@@ -190,12 +231,14 @@ pub fn validate_identity(profile: &ProfessionalIdentityVersion) -> Result<()> {
     }
 
     let mut ids = HashSet::new();
+    let mut record_ids = HashSet::new();
     for (index, record) in profile.records.iter().enumerate() {
         if !ids.insert(record.id) {
             return Err(anyhow!(
                 "duplicate identity record UUID at records[{index}]"
             ));
         }
+        record_ids.insert(record.id);
         validate_text(&format!("records[{index}].title"), &record.title)?;
         validate_text(&format!("records[{index}].content"), &record.content)?;
         validate_source(&format!("records[{index}].source"), &record.source)?;
@@ -249,7 +292,132 @@ pub fn validate_identity(profile: &ProfessionalIdentityVersion) -> Result<()> {
             validate_tags(&format!("{fact_path}.tags"), &fact.tags)?;
         }
     }
+    validate_authority_constraints(&profile.authority_constraints, &record_ids)?;
     Ok(())
+}
+
+fn validate_authority_constraints(
+    constraints: &[AuthorityConstraint],
+    record_ids: &HashSet<Uuid>,
+) -> Result<()> {
+    if constraints.len() > MAX_AUTHORITY_CONSTRAINTS {
+        return Err(anyhow!(
+            "authority_constraints exceeds the {MAX_AUTHORITY_CONSTRAINTS} item limit"
+        ));
+    }
+    let mut rule_ids = HashSet::new();
+    for (index, rule) in constraints.iter().enumerate() {
+        let path = format!("authority_constraints[{index}]");
+        if rule.id.is_empty()
+            || rule.id.len() > MAX_AUTHORITY_ALIAS_BYTES
+            || !rule.id.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+            })
+        {
+            return Err(anyhow!(
+                "{path}.id must use lowercase ASCII letters, digits, '_' or '-'"
+            ));
+        }
+        if !rule_ids.insert(rule.id.clone()) {
+            return Err(anyhow!("duplicate authority constraint id '{}'", rule.id));
+        }
+        validate_bounded_text(
+            &format!("{path}.label"),
+            &rule.label,
+            MAX_AUTHORITY_LABEL_BYTES,
+        )?;
+        validate_authority_aliases(&format!("{path}.contexts"), &rule.contexts, false)?;
+        let permitted = validate_authority_aliases(
+            &format!("{path}.permitted_objects"),
+            &rule.permitted_objects,
+            true,
+        )?;
+        let excluded = validate_authority_aliases(
+            &format!("{path}.excluded_objects"),
+            &rule.excluded_objects,
+            true,
+        )?;
+        if let Some(overlap) = permitted.intersection(&excluded).next() {
+            return Err(anyhow!(
+                "{path} contains object alias '{overlap}' in both permitted and excluded sets"
+            ));
+        }
+        if rule.action_families.is_empty() || rule.action_families.len() > MAX_AUTHORITY_ALIASES {
+            return Err(anyhow!(
+                "{path}.action_families must contain 1..={MAX_AUTHORITY_ALIASES} items"
+            ));
+        }
+        let unique_actions = rule.action_families.iter().copied().collect::<HashSet<_>>();
+        if unique_actions.len() != rule.action_families.len() {
+            return Err(anyhow!("{path}.action_families contains duplicates"));
+        }
+        if rule.evidence_record_ids.is_empty()
+            || rule.evidence_record_ids.len() > MAX_AUTHORITY_ALIASES
+        {
+            return Err(anyhow!(
+                "{path}.evidence_record_ids must contain 1..={MAX_AUTHORITY_ALIASES} items"
+            ));
+        }
+        let unique_evidence = rule
+            .evidence_record_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        if unique_evidence.len() != rule.evidence_record_ids.len() {
+            return Err(anyhow!("{path}.evidence_record_ids contains duplicates"));
+        }
+        if let Some(unknown) = unique_evidence.difference(record_ids).next() {
+            return Err(anyhow!(
+                "{path}.evidence_record_ids references unknown record {unknown}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_authority_aliases(
+    path: &str,
+    aliases: &[String],
+    required: bool,
+) -> Result<HashSet<String>> {
+    if (required && aliases.is_empty()) || aliases.len() > MAX_AUTHORITY_ALIASES {
+        let minimum = usize::from(required);
+        return Err(anyhow!(
+            "{path} must contain {minimum}..={MAX_AUTHORITY_ALIASES} items"
+        ));
+    }
+    let mut normalized = HashSet::new();
+    for (index, alias) in aliases.iter().enumerate() {
+        validate_bounded_text(
+            &format!("{path}[{index}]"),
+            alias,
+            MAX_AUTHORITY_ALIAS_BYTES,
+        )?;
+        let value = normalize_authority_alias(alias);
+        if !normalized.insert(value) {
+            return Err(anyhow!("{path} contains duplicate alias '{alias}'"));
+        }
+    }
+    Ok(normalized)
+}
+
+fn validate_bounded_text(path: &str, value: &str, max_bytes: usize) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(anyhow!("{path} must not be empty"));
+    }
+    if value.len() > max_bytes {
+        return Err(anyhow!("{path} exceeds the {max_bytes} byte limit"));
+    }
+    Ok(())
+}
+
+fn normalize_authority_alias(value: &str) -> String {
+    value
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn hash_identity_version(profile: &ProfessionalIdentityVersion) -> Result<String> {
@@ -578,6 +746,7 @@ mod tests {
                 tags: vec!["staff".to_string(), "safety".to_string()],
             }],
             projects: vec![],
+            authority_constraints: vec![],
         }
     }
 
@@ -588,6 +757,78 @@ mod tests {
         let second = hash_identity_version(&identity).unwrap();
         assert_eq!(first, second);
         assert!(first.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn version_one_hash_remains_byte_compatible() {
+        let mut identity = sample_identity();
+        identity.schema_version = 1;
+        assert_eq!(
+            hash_identity_version(&identity).unwrap(),
+            "sha256:046e189db04ff360e8c11764255fd590e9f29199fa14f3124008e57c98d7492a"
+        );
+    }
+
+    #[test]
+    fn authority_constraints_are_versioned_hashed_and_evidence_bound() {
+        let mut identity = sample_identity();
+        let mut second_record = identity.records[0].clone();
+        second_record.id = Uuid::from_u128(2);
+        identity.records.push(second_record);
+        identity.authority_constraints.push(AuthorityConstraint {
+            id: "workstream-boundary".to_string(),
+            label: "Workstream boundary".to_string(),
+            contexts: vec![],
+            action_families: vec![AuthorityActionFamily::Manage],
+            permitted_objects: vec!["processing workstream".to_string()],
+            excluded_objects: vec!["whole operation".to_string()],
+            evidence_record_ids: vec![Uuid::from_u128(1)],
+        });
+        let first = hash_identity_version(&identity).unwrap();
+        let json = serde_json::to_string(&identity).unwrap();
+        assert_eq!(parse_identity_json(&json).unwrap(), identity);
+
+        identity.authority_constraints[0].excluded_objects[0] = "entire mission".to_string();
+        assert_ne!(first, hash_identity_version(&identity).unwrap());
+        identity.authority_constraints[0].excluded_objects[0] = "whole operation".to_string();
+        identity.authority_constraints[0].action_families[0] = AuthorityActionFamily::Lead;
+        assert_ne!(first, hash_identity_version(&identity).unwrap());
+        identity.authority_constraints[0].action_families[0] = AuthorityActionFamily::Manage;
+        identity.authority_constraints[0].evidence_record_ids[0] = Uuid::from_u128(2);
+        assert_ne!(first, hash_identity_version(&identity).unwrap());
+
+        identity.schema_version = 1;
+        assert!(validate_identity(&identity).is_err());
+        identity.schema_version = 2;
+        identity.authority_constraints[0].evidence_record_ids[0] = Uuid::from_u128(99);
+        assert!(validate_identity(&identity).is_err());
+    }
+
+    #[test]
+    fn authority_constraints_reject_duplicates_overlap_and_unknown_fields() {
+        let mut identity = sample_identity();
+        let rule = AuthorityConstraint {
+            id: "workstream-boundary".to_string(),
+            label: "Workstream boundary".to_string(),
+            contexts: vec!["Tripoli".to_string()],
+            action_families: vec![AuthorityActionFamily::Manage],
+            permitted_objects: vec!["processing workstream".to_string()],
+            excluded_objects: vec!["whole operation".to_string()],
+            evidence_record_ids: vec![Uuid::from_u128(1)],
+        };
+        identity.authority_constraints = vec![rule.clone(), rule.clone()];
+        assert!(validate_identity(&identity).is_err());
+
+        identity.authority_constraints = vec![rule];
+        identity.authority_constraints[0].excluded_objects =
+            vec!["Processing, workstream!".to_string()];
+        assert!(validate_identity(&identity).is_err());
+
+        let mut json = serde_json::to_value(sample_identity()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .insert("unexpected".to_string(), serde_json::json!(true));
+        assert!(parse_identity_json(&serde_json::to_string(&json).unwrap()).is_err());
     }
 
     #[test]

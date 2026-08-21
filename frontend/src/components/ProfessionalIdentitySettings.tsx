@@ -40,10 +40,11 @@ const timestamp = () => new Date().toISOString()
 
 function blankIdentity(): ProfessionalIdentityVersion {
   return {
-    schema_version: 1,
+    schema_version: 2,
     identity: { display_name: '', role_title: '', organization: '', professional_summary: '' },
     records: [],
     projects: [],
+    authority_constraints: [],
   }
 }
 
