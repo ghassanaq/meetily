@@ -6,8 +6,9 @@ use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::Instant;
-use tauri::{AppHandle, Manager, Runtime};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::app_paths::AppPaths;
@@ -25,8 +26,8 @@ use super::bundle::{
     export_bundle, import_bundle, parse_bundle_json, BundleError, ImportIdentityMode,
 };
 use super::evaluation::{
-    adjudicate_evaluation_report, run_evaluation, EvaluationReport, EvaluationRequest,
-    ProductionProfileEvaluationBackend, SemanticAdjudication,
+    adjudicate_evaluation_report, run_evaluation, EvaluationProgress, EvaluationReport,
+    EvaluationRequest, ProductionProfileEvaluationBackend, SemanticAdjudication,
 };
 use super::generation::{
     generate_profile_summary, ProfileGenerationRequest, ProfileGenerationResult,
@@ -39,6 +40,11 @@ use super::OUTPUT_PARSER_VERSION;
 
 static MODEL_ARTIFACT_HASH_CACHE: Lazy<Mutex<HashMap<PathBuf, (u64, u128, String)>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static EVALUATION_CANCELLATIONS: Lazy<Mutex<HashMap<Uuid, CancellationToken>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+const EVALUATION_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const EVALUATION_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProfileCommandError {
@@ -99,6 +105,7 @@ pub struct ProfileEvalResponse {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileEvalArgs {
+    pub run_id: Uuid,
     pub profile_id: Uuid,
     pub profile_version_hash: String,
     pub plan_id: Uuid,
@@ -110,6 +117,46 @@ pub struct ProfileEvalArgs {
     pub adjudications: Vec<SemanticAdjudication>,
     #[serde(default)]
     pub cloud_consent: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileEvaluationProgress {
+    run_id: Uuid,
+    completed_calls: usize,
+    total_calls: usize,
+    case_id: Option<String>,
+    target: Option<super::evaluation::EvalTarget>,
+    repetition: Option<u32>,
+}
+
+struct EvaluationRegistration {
+    run_id: Uuid,
+}
+
+impl Drop for EvaluationRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = EVALUATION_CANCELLATIONS.lock() {
+            registry.remove(&self.run_id);
+        }
+    }
+}
+
+fn register_evaluation(
+    run_id: Uuid,
+) -> Result<(CancellationToken, EvaluationRegistration), ProfileCommandError> {
+    let token = CancellationToken::new();
+    let mut registry = EVALUATION_CANCELLATIONS
+        .lock()
+        .map_err(|_| ProfileCommandError::new("EVAL_FAILED", "evaluation registry is unavailable"))?;
+    if registry.contains_key(&run_id) {
+        return Err(ProfileCommandError::new(
+            "EVAL_FAILED",
+            "an evaluation with this run ID is already active",
+        ));
+    }
+    registry.insert(run_id, token.clone());
+    Ok((token, EvaluationRegistration { run_id }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -385,6 +432,7 @@ pub async fn profile_run_evals<R: Runtime>(
     state: tauri::State<'_, AppState>,
     args: ProfileEvalArgs,
 ) -> Result<ProfileEvalResponse, ProfileCommandError> {
+    let (cancellation, _registration) = register_evaluation(args.run_id)?;
     let pool = state.db_manager.pool();
     let candidate = load_profile(pool, args.profile_id, &args.profile_version_hash).await?;
     let plan = ExpertProfilesRepository::get_eval_plan(pool, args.plan_id, &args.plan_hash)
@@ -402,8 +450,12 @@ pub async fn profile_run_evals<R: Runtime>(
         None => None,
     };
     let resolved = resolve_provider(&app, pool, args.cloud_consent).await?;
-    let client = reqwest::Client::new();
-    let base_request = generation_request(
+    let client = reqwest::Client::builder()
+        .connect_timeout(EVALUATION_CONNECT_TIMEOUT)
+        .timeout(EVALUATION_HTTP_TIMEOUT)
+        .build()
+        .map_err(|error| ProfileCommandError::new("PROVIDER_UNAVAILABLE", error.to_string()))?;
+    let mut base_request = generation_request(
         &client,
         &resolved,
         "",
@@ -413,7 +465,21 @@ pub async fn profile_run_evals<R: Runtime>(
         Some("en"),
         Some("en"),
     );
+    base_request.cancellation_token = Some(&cancellation);
     let backend = ProductionProfileEvaluationBackend { base_request };
+    let progress = |update: EvaluationProgress| {
+        let _ = app.emit(
+            "profile-eval-progress",
+            ProfileEvaluationProgress {
+                run_id: args.run_id,
+                completed_calls: update.completed_calls,
+                total_calls: update.total_calls,
+                case_id: update.case_id,
+                target: update.target,
+                repetition: update.repetition,
+            },
+        );
+    };
     let report = run_evaluation(
         &backend,
         EvaluationRequest {
@@ -427,6 +493,8 @@ pub async fn profile_run_evals<R: Runtime>(
             qualifying: args.qualifying,
             confirmed_removed_playbooks: &args.confirmed_removed_playbooks,
             adjudications: &args.adjudications,
+            cancellation_token: Some(&cancellation),
+            progress: Some(&progress),
         },
     )
     .await
@@ -434,6 +502,19 @@ pub async fn profile_run_evals<R: Runtime>(
     let run =
         ExpertProfilesRepository::persist_evaluation_report(pool, args.profile_id, &report).await?;
     Ok(ProfileEvalResponse { run, report })
+}
+
+#[tauri::command]
+pub fn profile_cancel_eval(run_id: Uuid) -> Result<bool, ProfileCommandError> {
+    let registry = EVALUATION_CANCELLATIONS
+        .lock()
+        .map_err(|_| ProfileCommandError::new("EVAL_FAILED", "evaluation registry is unavailable"))?;
+    if let Some(token) = registry.get(&run_id) {
+        token.cancel();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 #[tauri::command]

@@ -761,6 +761,7 @@ pub fn run() {
             expert_profiles::commands::profile_export,
             expert_profiles::commands::profile_import,
             expert_profiles::commands::profile_run_evals,
+            expert_profiles::commands::profile_cancel_eval,
             expert_profiles::commands::profile_adjudicate_eval,
             expert_profiles::commands::profile_activate,
             expert_profiles::commands::profile_retire,

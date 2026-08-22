@@ -1,7 +1,8 @@
 'use client';
 
 import { invoke } from '@tauri-apps/api/core';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -22,6 +23,15 @@ interface SemanticScore {
   score: string;
 }
 
+interface ProfileEvaluationProgress {
+  runId: string;
+  completedCalls: number;
+  totalCalls: number;
+  caseId: string | null;
+  target: 'candidate' | 'baseline' | null;
+  repetition: number | null;
+}
+
 export function ExpertProfilesSettings() {
   const [profiles, setProfiles] = useState<ExpertProfileSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -38,6 +48,10 @@ export function ExpertProfilesSettings() {
   const [evaluation, setEvaluation] = useState<ProfileEvalResponse | null>(null);
   const [scores, setScores] = useState<SemanticScore[]>([]);
   const [confirmedRemovedPlaybooks, setConfirmedRemovedPlaybooks] = useState<string[]>([]);
+  const [evaluationRunId, setEvaluationRunId] = useState<string | null>(null);
+  const [evaluationProgress, setEvaluationProgress] = useState<ProfileEvaluationProgress | null>(null);
+  const [evaluationCancelling, setEvaluationCancelling] = useState(false);
+  const evaluationRunIdRef = useRef<string | null>(null);
 
   const selectedProfile = useMemo(
     () => profiles.find(profile => profile.id === selectedId) ?? null,
@@ -74,6 +88,23 @@ export function ExpertProfilesSettings() {
   useEffect(() => {
     refreshProfiles().catch(error => toast.error(formatError(error)));
   }, [refreshProfiles]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    listen<ProfileEvaluationProgress>('profile-eval-progress', event => {
+      if (event.payload.runId === evaluationRunIdRef.current) {
+        setEvaluationProgress(event.payload);
+      }
+    }).then(stop => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -157,26 +188,56 @@ export function ExpertProfilesSettings() {
     toast.success('Evaluation plan stored immutably.');
   });
 
-  const runEvaluation = () => run(async () => {
+  const runEvaluation = () => {
     if (!selectedId || !selectedVersion || !selectedPlan) return;
-    const plan = plans.find(row => row.content_hash === selectedPlan);
-    if (!plan) return;
-    const result = await invoke<ProfileEvalResponse>('profile_run_evals', {
-      args: {
-        profile_id: selectedId,
-        profile_version_hash: selectedVersion,
-        plan_id: plan.id,
-        plan_hash: selectedPlan,
-        qualifying: true,
-        confirmed_removed_playbooks: confirmedRemovedPlaybooks,
-        adjudications: [],
-        cloud_consent: cloudConsent,
-      },
+    const runId = crypto.randomUUID();
+    evaluationRunIdRef.current = runId;
+    setEvaluationRunId(runId);
+    setEvaluationProgress(null);
+    setEvaluationCancelling(false);
+    void run(async () => {
+      try {
+        const plan = plans.find(row => row.content_hash === selectedPlan);
+        if (!plan) return;
+        const result = await invoke<ProfileEvalResponse>('profile_run_evals', {
+          args: {
+            run_id: runId,
+            profile_id: selectedId,
+            profile_version_hash: selectedVersion,
+            plan_id: plan.id,
+            plan_hash: selectedPlan,
+            qualifying: true,
+            confirmed_removed_playbooks: confirmedRemovedPlaybooks,
+            adjudications: [],
+            cloud_consent: cloudConsent,
+          },
+        });
+        setEvaluation(result);
+        setScores(semanticScoreRows(result.report));
+        toast.success(`Evaluation completed: ${result.report.outcome}.`);
+      } finally {
+        if (evaluationRunIdRef.current === runId) {
+          evaluationRunIdRef.current = null;
+          setEvaluationRunId(null);
+          setEvaluationCancelling(false);
+        }
+      }
     });
-    setEvaluation(result);
-    setScores(semanticScoreRows(result.report));
-    toast.success(`Evaluation completed: ${result.report.outcome}.`);
-  });
+  };
+
+  const cancelEvaluation = async () => {
+    if (!evaluationRunId || evaluationCancelling) return;
+    setEvaluationCancelling(true);
+    try {
+      const found = await invoke<boolean>('profile_cancel_eval', { runId: evaluationRunId });
+      if (!found) {
+        toast.error('The evaluation is no longer running.');
+      }
+    } catch (error) {
+      setEvaluationCancelling(false);
+      toast.error(formatError(error));
+    }
+  };
 
   const adjudicate = () => run(async () => {
     if (!selectedId || !selectedPlan || !evaluation) return;
@@ -402,6 +463,35 @@ export function ExpertProfilesSettings() {
             {selectedId && <Button variant="outline" onClick={storePlan} disabled={busy || !planJson.trim()}>Store new eval plan</Button>}
             {selectedId && <Button onClick={runEvaluation} disabled={busy || !selectedVersion || !selectedPlan}>Run qualifying evaluation</Button>}
           </div>
+          {evaluationRunId && (
+            <div className="space-y-2 rounded-md border border-blue-200 bg-blue-50 p-3" role="status" aria-live="polite">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-blue-950">
+                    {evaluationCancelling
+                      ? 'Cancelling evaluation…'
+                      : evaluationProgress?.totalCalls
+                        ? `Evaluating call ${Math.min(evaluationProgress.completedCalls + 1, evaluationProgress.totalCalls)} of ${evaluationProgress.totalCalls}`
+                        : 'Preparing evaluation…'}
+                  </p>
+                  {evaluationProgress?.caseId && (
+                    <p className="text-xs text-blue-800">
+                      Completed {evaluationProgress.completedCalls} of {evaluationProgress.totalCalls} · {evaluationProgress.target} · {evaluationProgress.caseId} · repetition {(evaluationProgress.repetition ?? 0) + 1}
+                    </p>
+                  )}
+                </div>
+                <Button variant="outline" size="sm" onClick={cancelEvaluation} disabled={evaluationCancelling}>
+                  {evaluationCancelling ? 'Cancelling…' : 'Cancel evaluation'}
+                </Button>
+              </div>
+              <progress
+                className="h-2 w-full"
+                max={evaluationProgress?.totalCalls || 1}
+                value={evaluationProgress?.completedCalls || 0}
+              />
+              <p className="text-xs text-blue-800">Results are saved even if the provider fails repeatedly or you cancel.</p>
+            </div>
+          )}
         </section>
 
         {evaluation && (

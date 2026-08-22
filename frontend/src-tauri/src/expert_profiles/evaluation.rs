@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::generation::{
@@ -132,7 +133,27 @@ pub struct EvaluationRequest<'a> {
     pub qualifying: bool,
     pub confirmed_removed_playbooks: &'a [Uuid],
     pub adjudications: &'a [SemanticAdjudication],
+    pub cancellation_token: Option<&'a CancellationToken>,
+    pub progress: Option<&'a (dyn Fn(EvaluationProgress) + Sync)>,
 }
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct EvaluationProgress {
+    pub completed_calls: usize,
+    pub total_calls: usize,
+    pub case_id: Option<String>,
+    pub target: Option<EvalTarget>,
+    pub repetition: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunStatus {
+    Continue,
+    Cancelled,
+    ProviderCircuitOpen,
+}
+
+const MAX_CONSECUTIVE_GENERATION_ERRORS: usize = 3;
 
 #[async_trait]
 pub trait ProfileEvaluationBackend: Sync {
@@ -279,11 +300,32 @@ pub async fn run_evaluation(
         fixtures.insert(&fixture.id, &fixture.transcript_text);
     }
 
+    let total_calls = cases
+        .iter()
+        .map(|case| {
+            let targets = 1 + usize::from(baseline_ids.contains(&case.playbook_id));
+            targets * repetitions as usize
+        })
+        .sum();
+    let mut completed_calls = 0;
+    let mut consecutive_generation_errors = 0;
+    let mut stopped = RunStatus::Continue;
+    report_progress(
+        request.progress,
+        EvaluationProgress {
+            completed_calls,
+            total_calls,
+            case_id: None,
+            target: None,
+            repetition: None,
+        },
+    );
+
     for case in &cases {
         let transcript = fixtures
             .get(case.fixture_id.as_str())
             .expect("validated user cases and application safety cases have fixtures");
-        run_case(
+        stopped = run_case(
             backend,
             request.candidate,
             case,
@@ -294,11 +336,19 @@ pub async fn run_evaluation(
             request.plan.policy.semantic_min_score,
             &adjudications,
             &mut results,
+            request.cancellation_token,
+            request.progress,
+            total_calls,
+            &mut completed_calls,
+            &mut consecutive_generation_errors,
         )
         .await;
+        if stopped != RunStatus::Continue {
+            break;
+        }
 
         if baseline_ids.contains(&case.playbook_id) {
-            run_case(
+            stopped = run_case(
                 backend,
                 request
                     .baseline
@@ -311,8 +361,16 @@ pub async fn run_evaluation(
                 request.plan.policy.semantic_min_score,
                 &adjudications,
                 &mut results,
+                request.cancellation_token,
+                request.progress,
+                total_calls,
+                &mut completed_calls,
+                &mut consecutive_generation_errors,
             )
             .await;
+            if stopped != RunStatus::Continue {
+                break;
+            }
         }
     }
 
@@ -353,6 +411,15 @@ pub async fn run_evaluation(
     if any_generation_error {
         reasons.push("PROVIDER_UNAVAILABLE: one or more generation calls failed".to_string());
     }
+    match stopped {
+        RunStatus::Cancelled => reasons.push(
+            "EVAL_CANCELLED: evaluation was cancelled; partial results were saved".to_string(),
+        ),
+        RunStatus::ProviderCircuitOpen => reasons.push(format!(
+            "PROVIDER_UNAVAILABLE: stopped after {MAX_CONSECUTIVE_GENERATION_ERRORS} consecutive generation failures; partial results were saved"
+        )),
+        RunStatus::Continue => {}
+    }
     if any_hard_failure {
         reasons.push("EVAL_FAILED: at least one hard assertion failed".to_string());
     }
@@ -372,7 +439,11 @@ pub async fn run_evaluation(
 
     let outcome = if !unconfirmed.is_empty() {
         EvalRunOutcome::Rejected
-    } else if any_generation_error || any_semantic_unresolved || inconsistent_semantics {
+    } else if stopped != RunStatus::Continue
+        || any_generation_error
+        || any_semantic_unresolved
+        || inconsistent_semantics
+    {
         EvalRunOutcome::Inconclusive
     } else if any_hard_failure || any_semantic_failure || semantic_regression {
         EvalRunOutcome::Fail
@@ -414,13 +485,27 @@ async fn run_case(
     semantic_min_score: f64,
     adjudications: &HashMap<(EvalTarget, &str, u32, usize), f64>,
     results: &mut Vec<EvalRepetitionResult>,
-) {
+    cancellation_token: Option<&CancellationToken>,
+    progress: Option<&(dyn Fn(EvaluationProgress) + Sync)>,
+    total_calls: usize,
+    completed_calls: &mut usize,
+    consecutive_generation_errors: &mut usize,
+) -> RunStatus {
     for repetition in 0..repetitions {
-        let generated = tokio::time::timeout(
+        if cancellation_token.is_some_and(CancellationToken::is_cancelled) {
+            return RunStatus::Cancelled;
+        }
+        let generation = tokio::time::timeout(
             timeout,
             backend.generate(profile, case.playbook_id, transcript),
-        )
-        .await;
+        );
+        let generated = match cancellation_token {
+            Some(token) => tokio::select! {
+                _ = token.cancelled() => return RunStatus::Cancelled,
+                result = generation => result,
+            },
+            None => generation.await,
+        };
         let (hard, semantic, output_markdown, generation_error) = match generated {
             Ok(Ok(markdown)) => {
                 let hard = evaluate_hard(profile, case, &markdown);
@@ -446,6 +531,38 @@ async fn run_case(
             output_markdown,
             generation_error,
         });
+        *completed_calls += 1;
+        let failed = results
+            .last()
+            .is_some_and(|result| result.generation_error.is_some());
+        if failed {
+            *consecutive_generation_errors += 1;
+        } else {
+            *consecutive_generation_errors = 0;
+        }
+        report_progress(
+            progress,
+            EvaluationProgress {
+                completed_calls: *completed_calls,
+                total_calls,
+                case_id: Some(case.id.clone()),
+                target: Some(target),
+                repetition: Some(repetition),
+            },
+        );
+        if *consecutive_generation_errors >= MAX_CONSECUTIVE_GENERATION_ERRORS {
+            return RunStatus::ProviderCircuitOpen;
+        }
+    }
+    RunStatus::Continue
+}
+
+fn report_progress(
+    progress: Option<&(dyn Fn(EvaluationProgress) + Sync)>,
+    update: EvaluationProgress,
+) {
+    if let Some(progress) = progress {
+        progress(update);
     }
 }
 
@@ -842,6 +959,8 @@ mod tests {
                 qualifying: true,
                 confirmed_removed_playbooks: confirmed_removed,
                 adjudications: scores,
+                cancellation_token: None,
+                progress: None,
             },
         )
         .await
@@ -979,10 +1098,96 @@ mod tests {
         .await;
 
         assert_eq!(report.outcome, EvalRunOutcome::Inconclusive);
+        assert_eq!(report.repetitions.len(), MAX_CONSECUTIVE_GENERATION_ERRORS);
         assert!(report
             .reasons
             .iter()
             .any(|reason| reason.starts_with("PROVIDER_UNAVAILABLE")));
+        assert!(report
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("partial results were saved")));
+    }
+
+    #[tokio::test]
+    async fn cancelled_evaluation_returns_a_persistable_partial_report() {
+        let profile = sample_profile();
+        let mut plan = sample_eval_plan(&profile);
+        plan.cases[0].assertions.semantic.clear();
+        let candidate_hash = hash_profile_version(&profile).unwrap();
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let report = run_evaluation(
+            &DeterministicBackend {
+                echo_transcript: false,
+                fail: false,
+            },
+            EvaluationRequest {
+                profile_id: Uuid::new_v4(),
+                candidate_profile_version_hash: &candidate_hash,
+                candidate: &profile,
+                baseline_profile_version_hash: None,
+                baseline: None,
+                plan: &plan,
+                model_binding: &binding(),
+                qualifying: true,
+                confirmed_removed_playbooks: &[],
+                adjudications: &[],
+                cancellation_token: Some(&token),
+                progress: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.outcome, EvalRunOutcome::Inconclusive);
+        assert!(report.repetitions.is_empty());
+        assert!(report
+            .reasons
+            .iter()
+            .any(|reason| reason.starts_with("EVAL_CANCELLED")));
+    }
+
+    #[tokio::test]
+    async fn progress_reports_the_total_and_every_completed_provider_call() {
+        let profile = sample_profile();
+        let mut plan = sample_eval_plan(&profile);
+        plan.cases[0].assertions.semantic.clear();
+        let candidate_hash = hash_profile_version(&profile).unwrap();
+        let updates = std::sync::Mutex::new(Vec::new());
+        let progress = |update| updates.lock().unwrap().push(update);
+
+        let report = run_evaluation(
+            &DeterministicBackend {
+                echo_transcript: false,
+                fail: false,
+            },
+            EvaluationRequest {
+                profile_id: Uuid::new_v4(),
+                candidate_profile_version_hash: &candidate_hash,
+                candidate: &profile,
+                baseline_profile_version_hash: None,
+                baseline: None,
+                plan: &plan,
+                model_binding: &binding(),
+                qualifying: true,
+                confirmed_removed_playbooks: &[],
+                adjudications: &[],
+                cancellation_token: None,
+                progress: Some(&progress),
+            },
+        )
+        .await
+        .unwrap();
+
+        let updates = updates.into_inner().unwrap();
+        let total = report.repetitions.len();
+        assert_eq!(updates.len(), total + 1);
+        assert_eq!(updates[0].completed_calls, 0);
+        assert_eq!(updates[0].total_calls, total);
+        assert_eq!(updates.last().unwrap().completed_calls, total);
+        assert_eq!(updates.last().unwrap().total_calls, total);
     }
 
     #[tokio::test]
