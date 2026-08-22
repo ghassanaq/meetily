@@ -1,6 +1,6 @@
 # Interview Evaluation v2 Design
 
-Status: draft for review; no implementation authorised
+Status: reviewed architecture; tasks 1-4 implemented, task 5 outstanding (see §9)
 Date: 2026-08-22
 Scope: `expert_profiles` evaluation for the Interview lens
 Supersedes: the v1 eval plan in `presets.rs::interview_eval_plan`
@@ -432,11 +432,12 @@ remaining split stays independently reviewable:
    revision, generation parameters, test time, and binding digest before confirmation; and
    stores the safe binding payload in every report, including failures. API keys remain only
    in secure credential storage and are never serialized or hashed.
-2. fixture schema with the evidence-contract set and full-input digest, plus validation,
-   no runtime behaviour;
-3. the deterministic safety gate, with authority matching advisory;
-4. synthetic evidence packages and per-contract rubrics, plus the section 6.1 activation
-   rule;
-5. rerun and activation decision.
+2. **Complete** — fixture schema with the evidence-contract set and full-input digest,
+   plus validation, no runtime behaviour;
+3. **Complete** — the deterministic safety gate, with authority matching advisory;
+4. **Complete** — synthetic evidence packages and per-contract rubrics, plus the
+   section 6.1 activation rule, and shape-aware Junior and Mid-level playbooks per
+   section 4.0;
+5. **Outstanding** — rerun and activation decision.
 
 Tasks 1–4 have landed. The next permitted paid work is one explicitly non-qualifying v2 tuning run after the existing Interview lens is upgraded and the new immutable profile version and eval plan are selected. No qualifying comparison should be commissioned until that tuning pass is adjudicated and satisfiable.
