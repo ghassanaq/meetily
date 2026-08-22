@@ -5,12 +5,15 @@ use std::fmt::Write;
 use thiserror::Error;
 
 use super::models::{
-    EffectiveCapabilityRevision, EvalPlan, ExpertProfileVersion, ModelGenerationBinding,
+    EffectiveCapabilityRevision, EvalCase, EvalFixture, EvalPlan, ExpertProfileVersion,
+    ModelGenerationBinding,
 };
 
 const PROFILE_HASH_DOMAIN: &[u8] = b"meetily-profile-v1\0";
 const EVAL_PLAN_HASH_DOMAIN: &[u8] = b"meetily-eval-plan-v1\0";
 const FIXTURE_HASH_DOMAIN: &[u8] = b"meetily-eval-fixture-v1\0";
+const FIXTURE_V2_HASH_DOMAIN: &[u8] = b"meetily-eval-fixture-v2\0";
+const SAFETY_SUITE_HASH_DOMAIN: &[u8] = b"meetily-eval-safety-suite-v2\0";
 const MODEL_BINDING_HASH_DOMAIN: &[u8] = b"meetily-model-binding-v1\0";
 const CAPABILITY_REVISION_HASH_DOMAIN: &[u8] = b"meetily-capability-revision-v1\0";
 const PROMPT_RENDERER_HASH_DOMAIN: &[u8] = b"meetily-profile-prompt-renderer-v1\0";
@@ -34,6 +37,51 @@ pub fn hash_eval_plan(plan: &EvalPlan) -> Result<String, HashError> {
 
 pub fn hash_fixture_text(transcript_text: &str) -> String {
     hash_bytes(FIXTURE_HASH_DOMAIN, transcript_text.as_bytes())
+}
+
+pub fn hash_eval_fixture(fixture: &EvalFixture) -> Result<String, HashError> {
+    #[derive(Serialize)]
+    struct FixtureInput<'a> {
+        transcript_text: &'a str,
+        answer_shape: &'a Option<super::models::AnswerShape>,
+        evidence_contracts: &'a [super::models::EvidenceContract],
+        evidence_records: &'a [super::models::EvalEvidenceRecord],
+        required_elements: &'a [String],
+        forbidden_expansions: &'a [String],
+        applicability: &'a Option<super::models::MandatoryApplicability>,
+    }
+
+    hash_serializable(
+        FIXTURE_V2_HASH_DOMAIN,
+        &FixtureInput {
+            transcript_text: &fixture.transcript_text,
+            answer_shape: &fixture.answer_shape,
+            evidence_contracts: &fixture.evidence_contracts,
+            evidence_records: &fixture.evidence_records,
+            required_elements: &fixture.required_elements,
+            forbidden_expansions: &fixture.forbidden_expansions,
+            applicability: &fixture.applicability,
+        },
+    )
+}
+
+pub fn hash_safety_suite(fixtures: &[EvalFixture], cases: &[EvalCase]) -> Result<String, HashError> {
+    #[derive(Serialize)]
+    struct SafetySuiteInput<'a> {
+        fixture_hashes: Vec<String>,
+        cases: &'a [EvalCase],
+    }
+    let hashes = fixtures
+        .iter()
+        .map(hash_eval_fixture)
+        .collect::<Result<Vec<_>, _>>()?;
+    hash_serializable(
+        SAFETY_SUITE_HASH_DOMAIN,
+        &SafetySuiteInput {
+            fixture_hashes: hashes,
+            cases,
+        },
+    )
 }
 
 pub fn hash_model_binding(binding: &ModelGenerationBinding) -> Result<String, HashError> {

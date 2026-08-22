@@ -750,6 +750,7 @@ pub fn run() {
             // Declarative Expert Profiles and embedded Meeting Playbooks
             expert_profiles::commands::profile_create,
             expert_profiles::commands::profile_create_interview_preset,
+            expert_profiles::commands::profile_upgrade_interview_preset,
             expert_profiles::commands::profile_create_version,
             expert_profiles::commands::profile_store_eval_plan,
             expert_profiles::commands::profile_list,

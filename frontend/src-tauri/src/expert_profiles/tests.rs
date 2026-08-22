@@ -68,6 +68,13 @@ pub(crate) fn sample_eval_plan(profile: &ExpertProfileVersion) -> EvalPlan {
             content_hash: hash_fixture_text(&transcript_text),
             source: "synthetic:user".to_string(),
             transcript_text,
+            suite: Default::default(),
+            answer_shape: None,
+            evidence_contracts: Vec::new(),
+            evidence_records: Vec::new(),
+            required_elements: Vec::new(),
+            forbidden_expansions: Vec::new(),
+            applicability: None,
         }],
         cases: vec![EvalCase {
             id: "case-standup".to_string(),

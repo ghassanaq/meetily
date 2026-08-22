@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const EXPERT_PROFILE_SCHEMA_VERSION: u32 = 1;
+pub const EVAL_PLAN_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -113,6 +114,76 @@ pub struct EvalFixture {
     pub content_hash: String,
     pub source: String,
     pub transcript_text: String,
+    #[serde(default)]
+    pub suite: EvalSuite,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_shape: Option<AnswerShape>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_contracts: Vec<EvidenceContract>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_records: Vec<EvalEvidenceRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_elements: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forbidden_expansions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applicability: Option<MandatoryApplicability>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalSuite {
+    Safety,
+    #[default]
+    Depth,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerShape {
+    StrategicImplementation,
+    DirectFactualCommitment,
+    UrgentOperational,
+    EthicalScenario,
+    GovernanceSafeguardingFinancial,
+    ExternalPartnership,
+    CareerSuitability,
+    CapabilityGap,
+    BehavioralFailure,
+    ComparativeClosing,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceContract {
+    DocumentedOnly,
+    ProspectiveAllowed,
+    BoundaryThenProspective,
+    ConditionalCommitment,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EvalEvidenceRecord {
+    pub id: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DimensionApplicability {
+    Applicable,
+    NotApplicable,
+    Expected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MandatoryApplicability {
+    pub grounding: DimensionApplicability,
+    pub authority: DimensionApplicability,
+    pub past_vs_prospective: DimensionApplicability,
+    pub directness: DimensionApplicability,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -148,6 +219,33 @@ pub enum SemanticAssertion {
         adjudicator: AdjudicatorKind,
         threshold: f64,
     },
+    DimensionRubric {
+        dimension: EvaluationDimension,
+        applicability: DimensionApplicability,
+        question: String,
+        adjudicator: AdjudicatorKind,
+        threshold: f64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluationDimension {
+    Grounding,
+    Authority,
+    PastVsProspective,
+    Directness,
+    Depth,
+    Concision,
+}
+
+impl EvaluationDimension {
+    pub fn is_mandatory(self) -> bool {
+        matches!(
+            self,
+            Self::Grounding | Self::Authority | Self::PastVsProspective | Self::Directness
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,6 +315,8 @@ pub struct EffectiveCapabilityRevision {
     pub model_binding_hash: String,
     pub eval_plan_hash: String,
     pub safety_gate_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety_suite_hash: Option<String>,
 }
 
 #[cfg(test)]

@@ -340,6 +340,45 @@ pub async fn profile_create_interview_preset(
 }
 
 #[tauri::command]
+pub async fn profile_upgrade_interview_preset(
+    state: tauri::State<'_, AppState>,
+    profile_id: Uuid,
+) -> Result<ProfileCreateResponse, ProfileCommandError> {
+    let pool = state.db_manager.pool();
+    let existing = ExpertProfilesRepository::list_profiles(pool).await?;
+    let profile_summary = existing
+        .iter()
+        .find(|profile| profile.id == profile_id.to_string() && profile.retired_at.is_none())
+        .ok_or_else(|| ProfileCommandError::new("NOT_FOUND", "active profile was not found"))?;
+    if !profile_summary
+        .name
+        .eq_ignore_ascii_case(INTERVIEW_PRESET_NAME)
+    {
+        return Err(ProfileCommandError::new(
+            "SCHEMA_MISMATCH",
+            "only the shipped Interview lens can be upgraded with this action",
+        ));
+    }
+
+    let profile = interview_profile();
+    let plan = interview_eval_plan(&profile);
+    plan.validate_for_profile(&profile)
+        .map_err(validation_error)?;
+    let profile_version =
+        ExpertProfilesRepository::create_profile_version(pool, profile_id, &profile).await?;
+    let plan_id = Uuid::new_v4();
+    let eval_plan =
+        ExpertProfilesRepository::store_eval_plan(pool, profile_id, plan_id, &profile, &plan)
+            .await?;
+    Ok(ProfileCreateResponse {
+        profile_id,
+        plan_id,
+        profile_version,
+        eval_plan,
+    })
+}
+
+#[tauri::command]
 pub async fn profile_create_version(
     state: tauri::State<'_, AppState>,
     profile_id: Uuid,

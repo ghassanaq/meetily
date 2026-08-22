@@ -3,10 +3,11 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use uuid::Uuid;
 
-use super::hashing::hash_fixture_text;
+use super::hashing::{hash_eval_fixture, hash_fixture_text};
 use super::models::{
-    EvalPlan, ExpertProfileVersion, HardAssertion, OutputSection, SemanticAssertion,
-    EXPERT_PROFILE_SCHEMA_VERSION,
+    DimensionApplicability, EvalPlan, EvaluationDimension, ExpertProfileVersion, HardAssertion,
+    OutputSection, SemanticAssertion,
+    EVAL_PLAN_SCHEMA_VERSION, EXPERT_PROFILE_SCHEMA_VERSION,
 };
 
 const MAX_JSON_BYTES: usize = 1024 * 1024;
@@ -283,13 +284,16 @@ pub fn parse_eval_plan_json(input: &str) -> Result<EvalPlan, ValidationErrors> {
 }
 
 fn validate_eval_plan_base(plan: &EvalPlan, errors: &mut Vec<ValidationError>) {
-    if plan.schema_version != EXPERT_PROFILE_SCHEMA_VERSION {
+    if !matches!(
+        plan.schema_version,
+        EXPERT_PROFILE_SCHEMA_VERSION | EVAL_PLAN_SCHEMA_VERSION
+    ) {
         push_error(
             errors,
             ValidationErrorCode::SchemaMismatch,
             "$.schema_version",
             format!(
-                "expected schema version {EXPERT_PROFILE_SCHEMA_VERSION}, got {}",
+                "expected evaluation schema version 1 or {EVAL_PLAN_SCHEMA_VERSION}, got {}",
                 plan.schema_version
             ),
         );
@@ -352,7 +356,90 @@ fn validate_eval_plan_base(plan: &EvalPlan, errors: &mut Vec<ValidationError>) {
             );
         }
 
-        let expected_hash = hash_fixture_text(&fixture.transcript_text);
+        if plan.schema_version == EVAL_PLAN_SCHEMA_VERSION {
+            if fixture.answer_shape.is_none() {
+                push_error(
+                    errors,
+                    ValidationErrorCode::SchemaMismatch,
+                    format!("{path}.answer_shape"),
+                    "v2 depth fixtures require an answer shape",
+                );
+            }
+            if fixture.evidence_contracts.is_empty() {
+                push_error(
+                    errors,
+                    ValidationErrorCode::EmptyEvalPlan,
+                    format!("{path}.evidence_contracts"),
+                    "v2 depth fixtures require at least one evidence contract",
+                );
+            }
+            let unique_contracts: HashSet<_> = fixture.evidence_contracts.iter().collect();
+            if unique_contracts.len() != fixture.evidence_contracts.len() {
+                push_error(
+                    errors,
+                    ValidationErrorCode::DuplicateValue,
+                    format!("{path}.evidence_contracts"),
+                    "evidence contracts must be duplicate-free",
+                );
+            }
+            if fixture.evidence_records.is_empty() {
+                push_error(
+                    errors,
+                    ValidationErrorCode::EmptyEvalPlan,
+                    format!("{path}.evidence_records"),
+                    "v2 depth fixtures require a controlled evidence package",
+                );
+            }
+            if fixture.applicability.is_none() {
+                push_error(
+                    errors,
+                    ValidationErrorCode::SchemaMismatch,
+                    format!("{path}.applicability"),
+                    "v2 depth fixtures require mandatory-dimension applicability",
+                );
+            }
+            let mut record_ids = HashSet::new();
+            for (record_index, record) in fixture.evidence_records.iter().enumerate() {
+                validate_identifier(
+                    errors,
+                    &format!("{path}.evidence_records[{record_index}].id"),
+                    &record.id,
+                );
+                validate_text(
+                    errors,
+                    &format!("{path}.evidence_records[{record_index}].content"),
+                    &record.content,
+                );
+                if !record_ids.insert(record.id.as_str()) {
+                    push_error(
+                        errors,
+                        ValidationErrorCode::DuplicateValue,
+                        format!("{path}.evidence_records[{record_index}].id"),
+                        "evidence record IDs must be unique within a fixture",
+                    );
+                }
+            }
+            for (item_index, item) in fixture.required_elements.iter().enumerate() {
+                validate_text(
+                    errors,
+                    &format!("{path}.required_elements[{item_index}]"),
+                    item,
+                );
+            }
+            for (item_index, item) in fixture.forbidden_expansions.iter().enumerate() {
+                validate_text(
+                    errors,
+                    &format!("{path}.forbidden_expansions[{item_index}]"),
+                    item,
+                );
+            }
+        }
+
+        let expected_hash = if plan.schema_version == EVAL_PLAN_SCHEMA_VERSION {
+            hash_eval_fixture(fixture).unwrap_or_default()
+        } else {
+            hash_fixture_text(&fixture.transcript_text)
+        };
         if fixture.content_hash != expected_hash {
             push_error(
                 errors,
@@ -415,6 +502,11 @@ fn validate_eval_plan_base(plan: &EvalPlan, errors: &mut Vec<ValidationError>) {
                     question,
                     threshold,
                     ..
+                }
+                | SemanticAssertion::DimensionRubric {
+                    question,
+                    threshold,
+                    ..
                 } => {
                     validate_text(
                         errors,
@@ -426,6 +518,67 @@ fn validate_eval_plan_base(plan: &EvalPlan, errors: &mut Vec<ValidationError>) {
                         &format!("{path}.assertions.semantic[{assertion_index}].threshold"),
                         *threshold,
                     );
+                }
+            }
+        }
+
+        if plan.schema_version == EVAL_PLAN_SCHEMA_VERSION {
+            let mut dimensions = HashMap::new();
+            for (assertion_index, assertion) in case.assertions.semantic.iter().enumerate() {
+                match assertion {
+                    SemanticAssertion::DimensionRubric {
+                        dimension,
+                        applicability,
+                        ..
+                    } => {
+                        if dimensions.insert(*dimension, *applicability).is_some() {
+                            push_error(
+                                errors,
+                                ValidationErrorCode::DuplicateValue,
+                                format!("{path}.assertions.semantic[{assertion_index}].dimension"),
+                                "v2 cases must declare each scoring dimension at most once",
+                            );
+                        }
+                    }
+                    SemanticAssertion::Rubric { .. } => push_error(
+                        errors,
+                        ValidationErrorCode::SchemaMismatch,
+                        format!("{path}.assertions.semantic[{assertion_index}]"),
+                        "v2 cases require named dimension rubrics",
+                    ),
+                }
+            }
+            if let Some(fixture) = fixtures.get(case.fixture_id.as_str()) {
+                if let Some(applicability) = &fixture.applicability {
+                    let expected = [
+                        (EvaluationDimension::Grounding, applicability.grounding),
+                        (EvaluationDimension::Authority, applicability.authority),
+                        (
+                            EvaluationDimension::PastVsProspective,
+                            applicability.past_vs_prospective,
+                        ),
+                        (EvaluationDimension::Directness, applicability.directness),
+                        (EvaluationDimension::Depth, DimensionApplicability::Applicable),
+                        (
+                            EvaluationDimension::Concision,
+                            DimensionApplicability::Applicable,
+                        ),
+                    ];
+                    for (dimension, expected_applicability) in expected {
+                        if expected_applicability == DimensionApplicability::NotApplicable {
+                            continue;
+                        }
+                        if dimensions.get(&dimension) != Some(&expected_applicability) {
+                            push_error(
+                                errors,
+                                ValidationErrorCode::SchemaMismatch,
+                                format!("{path}.assertions.semantic"),
+                                format!(
+                                    "v2 case must declare {dimension:?} with {expected_applicability:?} applicability"
+                                ),
+                            );
+                        }
+                    }
                 }
             }
         }

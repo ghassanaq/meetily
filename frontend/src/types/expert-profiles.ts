@@ -74,6 +74,9 @@ export interface SemanticAssertionResult {
   threshold: number;
   score: number | null;
   passed: boolean | null;
+  dimension?: 'grounding' | 'authority' | 'past_vs_prospective' | 'directness' | 'depth' | 'concision';
+  applicability?: 'applicable' | 'not_applicable' | 'expected';
+  mandatory: boolean;
 }
 
 export interface EvalRepetitionResult {
@@ -85,6 +88,8 @@ export interface EvalRepetitionResult {
   semantic: SemanticAssertionResult[];
   output_markdown: string | null;
   generation_error: string | null;
+  suite: 'safety' | 'depth';
+  advisory_findings: string[];
 }
 
 export interface EvaluationReport {
@@ -96,6 +101,8 @@ export interface EvaluationReport {
   model_binding_hash: string;
   model_binding: ModelGenerationBinding | null;
   safety_gate_version: string;
+  safety_suite_hash?: string | null;
+  safety_passed: boolean;
   repetitions: EvalRepetitionResult[];
   baseline_missing_playbooks: string[];
   removed_playbooks: string[];

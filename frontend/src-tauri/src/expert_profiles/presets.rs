@@ -1,11 +1,13 @@
 use uuid::Uuid;
 
-use super::hashing::hash_fixture_text;
+use super::hashing::hash_eval_fixture;
 use super::models::{
-    AdjudicatorKind, EvalAssertions, EvalCase, EvalFixture, EvalPlan, EvalPolicy,
-    ExpertProfileVersion, HardAssertion, HardRegressionRule, MeetingPlaybook, OutputContract,
-    OutputSection, ProfileBoundaries, ProfileIdentity, ProfileOutputFormat, ProfileStyle,
-    RegressionPolicy, RetrievalMode, RetrievalPolicy, SectionFormat, SemanticAssertion,
+    AdjudicatorKind, AnswerShape, DimensionApplicability, EvalAssertions, EvalCase,
+    EvalEvidenceRecord, EvalFixture, EvalPlan, EvalPolicy, EvalSuite, EvaluationDimension,
+    EvidenceContract, ExpertProfileVersion, HardAssertion, HardRegressionRule,
+    MandatoryApplicability, MeetingPlaybook, OutputContract, OutputSection, ProfileBoundaries,
+    ProfileIdentity, ProfileOutputFormat, ProfileStyle, RegressionPolicy, RetrievalMode,
+    RetrievalPolicy, SectionFormat, SemanticAssertion, EVAL_PLAN_SCHEMA_VERSION,
     EXPERT_PROFILE_SCHEMA_VERSION,
 };
 
@@ -81,54 +83,39 @@ pub fn interview_profile() -> ExpertProfileVersion {
 
 pub fn interview_eval_plan(profile: &ExpertProfileVersion) -> EvalPlan {
     let fixtures = vec![
-        fixture(
-            "interview-leadership",
-            "Panel: How would you implement a new safeguarding framework across several field locations while maintaining delivery?",
-        ),
-        fixture(
-            "interview-commitment",
-            "Panel: Can you commit to completing the transition by 30 September within the existing budget?",
-        ),
-        fixture(
-            "interview-capability-gap",
-            "Panel: You have not previously led a clinical programme. Why should we trust you with this responsibility?",
-        ),
+        fixture("biography", AnswerShape::CareerSuitability, vec![EvidenceContract::DocumentedOnly], "Panel: Tell us about yourself and why your background fits this role.", vec![("career", "The candidate has fourteen years of humanitarian operations experience, including five years leading an eight-person processing team and five years designing regional compliance systems across fifteen country offices.")], vec!["career-spanning narrative", "direct connection to the role"], vec!["invented titles", "unsupported whole-mission authority"], applicable_all()),
+        fixture("tripoli-authority", AnswerShape::CareerSuitability, vec![EvidenceContract::DocumentedOnly], "Panel: Tell me about the Tripoli operation and be precise about what you led and what remained outside your authority.", vec![("tripoli", "During a three-week operation serving about one thousand people, the candidate led the health-processing workstream, supervising two data staff and two nurses and coordinating with two physicians. Clinical decisions remained with the physicians and overall mission authority remained outside the candidate's workstream.")], vec!["workstream leadership", "clinical and mission-authority boundaries"], vec!["managed the whole operation", "made clinical decisions"], applicable_all()),
+        fixture("pressure-leadership", AnswerShape::BehavioralFailure, vec![EvidenceContract::DocumentedOnly], "Panel: Give an example of leading under pressure when plans kept changing.", vec![("evacuation", "As processing-team lead during an evacuation response, the candidate sequenced groups of 200 to 250 people through multiple screening and departure stages, built a scheduling tool to prevent bottlenecks, and handled daily enquiries while conditions changed.")], vec!["specific pressure context", "actions and operational result"], vec!["sole authority for the evacuation", "fabricated measured outcome"], applicable_all()),
+        fixture("safeguarding-hypothetical", AnswerShape::GovernanceSafeguardingFinancial, vec![EvidenceContract::ProspectiveAllowed], "Panel: How would you implement a new safeguarding framework across several field locations while maintaining delivery?", vec![("transferable", "The candidate has documented experience designing SOPs, training teams, conducting compliance reviews, tracking corrective actions, and coordinating implementation across multiple locations. No past safeguarding-framework implementation is recorded.")], vec!["prospective best-practice method", "delivery continuity", "risk, controls, and escalation"], vec!["claiming a past safeguarding implementation", "invented safeguarding outcome"], prospective_applicability()),
+        fixture("conditional-commitment", AnswerShape::DirectFactualCommitment, vec![EvidenceContract::ConditionalCommitment], "Panel: Can you commit to completing the transition by 30 September within the existing budget?", vec![("authority", "The candidate can plan delivery and manage a defined workstream but has no recorded authority to approve the deadline, resources, or whole budget without sponsor confirmation.")], vec!["clear conditional answer", "dependencies", "authority limit"], vec!["unconditional deadline approval", "unconditional budget approval"], conditional_applicability()),
+        fixture("capability-gap", AnswerShape::CapabilityGap, vec![EvidenceContract::BoundaryThenProspective], "Panel: You have not previously led a clinical programme. Why should we trust you with this responsibility?", vec![("boundary", "The candidate has not led a clinical programme and does not make clinical decisions. The candidate has led multidisciplinary health-processing operations, coordinated clinicians, designed controlled workflows, and managed compliance and escalation.")], vec!["explicit capability boundary", "transferable evidence", "credible prospective approach"], vec!["claiming clinical-programme leadership", "claiming clinical authority"], boundary_applicability()),
     ];
-    let playbooks = &profile.playbooks;
-    let cases = playbooks
+    let cases = fixtures
         .iter()
-        .enumerate()
-        .map(|(index, playbook)| EvalCase {
-            id: format!(
-                "interview-{}",
-                playbook.name.to_lowercase().replace(' ', "-")
-            ),
-            fixture_id: fixtures[index].id.clone(),
-            playbook_id: playbook.id,
-            assertions: EvalAssertions {
-                hard: vec![
-                    HardAssertion::SchemaCompliance,
-                    HardAssertion::SectionPresent {
-                        section_id: "response".to_string(),
-                    },
-                    HardAssertion::LiteralAbsent {
-                        value: "Say this".to_string(),
-                    },
-                    HardAssertion::LiteralAbsent {
-                        value: "approved the deadline".to_string(),
-                    },
-                ],
-                semantic: vec![SemanticAssertion::Rubric {
-                    question: depth_rubric(&playbook.name).to_string(),
-                    adjudicator: AdjudicatorKind::Human,
-                    threshold: 0.8,
-                }],
-            },
+        .flat_map(|fixture| {
+            profile.playbooks.iter().map(move |playbook| EvalCase {
+                id: format!(
+                    "{}-{}",
+                    fixture.id,
+                    playbook.name.to_lowercase().replace(' ', "-")
+                ),
+                fixture_id: fixture.id.clone(),
+                playbook_id: playbook.id,
+                assertions: EvalAssertions {
+                    hard: vec![
+                        HardAssertion::SchemaCompliance,
+                        HardAssertion::SectionPresent {
+                            section_id: "response".to_string(),
+                        },
+                    ],
+                    semantic: semantic_dimensions(fixture, &playbook.name),
+                },
+            })
         })
         .collect();
 
     EvalPlan {
-        schema_version: EXPERT_PROFILE_SCHEMA_VERSION,
+        schema_version: EVAL_PLAN_SCHEMA_VERSION,
         fixtures,
         cases,
         policy: EvalPolicy {
@@ -149,7 +136,7 @@ fn junior_playbook() -> MeetingPlaybook {
         id: uuid(JUNIOR_PLAYBOOK_ID),
         name: "Junior".to_string(),
         description: "Clear foundational answers that demonstrate sound basics without pretending to senior judgment.".to_string(),
-        objective: "Give a direct position, explain the core principle, describe the immediate practical action, and acknowledge any material limit. Prefer clarity and correctness over complexity. Do not imitate an expert answer by merely shortening it.".to_string(),
+        objective: format!("Give a direct position, explain the core principle, describe the immediate practical action, and acknowledge any material limit. Prefer clarity and correctness over complexity. Do not imitate an expert answer by merely shortening it. {}", concise_shape_policy()),
         sections: vec![OutputSection {
             id: "junior-depth".to_string(),
             title: "Junior depth".to_string(),
@@ -165,7 +152,7 @@ fn mid_level_playbook() -> MeetingPlaybook {
         id: uuid(MID_LEVEL_PLAYBOOK_ID),
         name: "Mid-level".to_string(),
         description: "Applied professional judgment connecting principles to delivery, people, risks, and outcomes.".to_string(),
-        objective: "Give a direct position, show how it would be applied, sequence the main actions, identify the principal trade-off or risk, and connect the approach to stakeholders and intended outcomes. Do not imitate an expert answer by removing sentences from it.".to_string(),
+        objective: format!("Give a direct position, show how it would be applied, sequence the main actions, identify the principal trade-off or risk, and connect the approach to stakeholders and intended outcomes. Do not imitate an expert answer by removing sentences from it. {}", structured_shape_policy()),
         sections: vec![OutputSection {
             id: "mid-level-depth".to_string(),
             title: "Mid-level depth".to_string(),
@@ -205,13 +192,119 @@ fn depth_rubric(name: &str) -> &'static str {
     }
 }
 
-fn fixture(id: &str, transcript_text: &str) -> EvalFixture {
-    EvalFixture {
+fn fixture(
+    id: &str,
+    answer_shape: AnswerShape,
+    evidence_contracts: Vec<EvidenceContract>,
+    transcript_text: &str,
+    evidence: Vec<(&str, &str)>,
+    required_elements: Vec<&str>,
+    forbidden_expansions: Vec<&str>,
+    applicability: MandatoryApplicability,
+) -> EvalFixture {
+    let mut fixture = EvalFixture {
         id: id.to_string(),
-        content_hash: hash_fixture_text(transcript_text),
+        content_hash: String::new(),
         source: "synthetic:user".to_string(),
         transcript_text: transcript_text.to_string(),
+        suite: EvalSuite::Depth,
+        answer_shape: Some(answer_shape),
+        evidence_contracts,
+        evidence_records: evidence
+            .into_iter()
+            .map(|(id, content)| EvalEvidenceRecord {
+                id: id.to_string(),
+                content: content.to_string(),
+            })
+            .collect(),
+        required_elements: required_elements.into_iter().map(str::to_string).collect(),
+        forbidden_expansions: forbidden_expansions
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        applicability: Some(applicability),
+    };
+    fixture.content_hash = hash_eval_fixture(&fixture).expect("static interview fixture hashes");
+    fixture
+}
+
+fn semantic_dimensions(fixture: &EvalFixture, playbook_name: &str) -> Vec<SemanticAssertion> {
+    let a = fixture
+        .applicability
+        .as_ref()
+        .expect("v2 fixtures declare applicability");
+    let mut dimensions = vec![
+        dimension(EvaluationDimension::Grounding, a.grounding, "Does every past-tense factual claim remain supported by the controlled evidence package?"),
+        dimension(EvaluationDimension::Authority, a.authority, "Does the answer preserve the documented object and scope of authority without expansion?"),
+        dimension(EvaluationDimension::PastVsProspective, a.past_vs_prospective, "Does the answer keep documented experience separate from prospective method and commitment?"),
+        dimension(EvaluationDimension::Directness, a.directness, "Does the answer address the panel's actual question directly?"),
+        dimension(EvaluationDimension::Depth, DimensionApplicability::Applicable, depth_rubric(playbook_name)),
+        dimension(EvaluationDimension::Concision, DimensionApplicability::Applicable, "Is the answer natural to speak and no longer than its substance requires?"),
+    ];
+    dimensions.retain(|item| {
+        !matches!(
+            item,
+            SemanticAssertion::DimensionRubric {
+                applicability: DimensionApplicability::NotApplicable,
+                ..
+            }
+        )
+    });
+    dimensions
+}
+
+fn dimension(
+    dimension: EvaluationDimension,
+    applicability: DimensionApplicability,
+    question: &str,
+) -> SemanticAssertion {
+    SemanticAssertion::DimensionRubric {
+        dimension,
+        applicability,
+        question: question.to_string(),
+        adjudicator: AdjudicatorKind::Human,
+        threshold: 0.8,
     }
+}
+
+fn applicable_all() -> MandatoryApplicability {
+    MandatoryApplicability {
+        grounding: DimensionApplicability::Applicable,
+        authority: DimensionApplicability::Applicable,
+        past_vs_prospective: DimensionApplicability::Applicable,
+        directness: DimensionApplicability::Applicable,
+    }
+}
+fn prospective_applicability() -> MandatoryApplicability {
+    MandatoryApplicability {
+        grounding: DimensionApplicability::Expected,
+        authority: DimensionApplicability::Applicable,
+        past_vs_prospective: DimensionApplicability::Expected,
+        directness: DimensionApplicability::Applicable,
+    }
+}
+fn conditional_applicability() -> MandatoryApplicability {
+    MandatoryApplicability {
+        grounding: DimensionApplicability::Applicable,
+        authority: DimensionApplicability::Expected,
+        past_vs_prospective: DimensionApplicability::Expected,
+        directness: DimensionApplicability::Applicable,
+    }
+}
+fn boundary_applicability() -> MandatoryApplicability {
+    MandatoryApplicability {
+        grounding: DimensionApplicability::Expected,
+        authority: DimensionApplicability::Expected,
+        past_vs_prospective: DimensionApplicability::Expected,
+        directness: DimensionApplicability::Applicable,
+    }
+}
+
+fn concise_shape_policy() -> &'static str {
+    "Infer the closest question shape. For factual and career questions, lead with the single supported fact or example. For hypothetical questions, answer prospectively with the best-practice first step. For capability gaps, name the boundary before the proposed approach. For commitments, state conditions and authority limits."
+}
+fn structured_shape_policy() -> &'static str {
+    "Infer the closest question shape. For factual and career questions, connect supported evidence to the role. For hypothetical questions, give a prospective sequence with risks and controls. For capability gaps, name the boundary, transferable evidence, and proposed approach. For commitments, state dependencies, controls, and authority limits."
 }
 
 fn uuid(value: &str) -> Uuid {
@@ -221,7 +314,7 @@ fn uuid(value: &str) -> Uuid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expert_profiles::validation::Validate;
+    use crate::expert_profiles::validation::{Validate, ValidationErrorCode};
 
     #[test]
     fn interview_preset_is_strict_valid_and_covers_all_three_levels() {
@@ -231,7 +324,8 @@ mod tests {
         profile.validate().unwrap();
         plan.validate_for_profile(&profile).unwrap();
         assert_eq!(profile.playbooks.len(), 3);
-        assert_eq!(plan.cases.len(), 3);
+        assert_eq!(plan.fixtures.len(), 6);
+        assert_eq!(plan.cases.len(), 18);
         assert_eq!(profile.playbooks[0].name, "Junior");
         assert_eq!(profile.playbooks[1].name, "Mid-level");
         assert_eq!(profile.playbooks[2].name, "Expert");
@@ -250,5 +344,54 @@ mod tests {
         assert!(instruction.contains("The interview-specific types are"));
         assert!(!profile.playbooks[0].objective.contains('%'));
         assert!(!profile.playbooks[1].objective.contains('%'));
+        assert!(profile.playbooks[0]
+            .objective
+            .contains("hypothetical questions"));
+        assert!(profile.playbooks[1].objective.contains("capability gaps"));
+    }
+
+    #[test]
+    fn v2_fixture_digest_covers_evidence_content_and_policy() {
+        let profile = interview_profile();
+        let plan = interview_eval_plan(&profile);
+        let mut changed_evidence = plan.fixtures[0].clone();
+        changed_evidence.evidence_records[0]
+            .content
+            .push_str(" Changed.");
+        let mut changed_contract = plan.fixtures[0].clone();
+        changed_contract.evidence_contracts = vec![EvidenceContract::ProspectiveAllowed];
+
+        assert_ne!(
+            hash_eval_fixture(&plan.fixtures[0]).unwrap(),
+            hash_eval_fixture(&changed_evidence).unwrap()
+        );
+        assert_ne!(
+            hash_eval_fixture(&plan.fixtures[0]).unwrap(),
+            hash_eval_fixture(&changed_contract).unwrap()
+        );
+    }
+
+    #[test]
+    fn v2_validation_rejects_duplicate_contracts_and_stale_full_input_digest() {
+        let profile = interview_profile();
+        let mut duplicate = interview_eval_plan(&profile);
+        duplicate.fixtures[0]
+            .evidence_contracts
+            .push(EvidenceContract::DocumentedOnly);
+        duplicate.fixtures[0].content_hash =
+            hash_eval_fixture(&duplicate.fixtures[0]).unwrap();
+        let errors = duplicate.validate().unwrap_err();
+        assert!(errors
+            .0
+            .iter()
+            .any(|error| error.code == ValidationErrorCode::DuplicateValue));
+
+        let mut stale = interview_eval_plan(&profile);
+        stale.fixtures[0].required_elements.push("new requirement".to_string());
+        let errors = stale.validate().unwrap_err();
+        assert!(errors
+            .0
+            .iter()
+            .any(|error| error.code == ValidationErrorCode::DigestMismatch));
     }
 }

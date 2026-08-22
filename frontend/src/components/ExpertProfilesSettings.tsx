@@ -201,6 +201,18 @@ export function ExpertProfilesSettings() {
     toast.success('Interview lens created with Junior, Mid-level, and Expert depth playbooks.');
   });
 
+  const upgradeInterviewLens = () => run(async () => {
+    if (!selectedId) return;
+    const upgraded = await invoke<{ profile_version: StoredProfileVersion; eval_plan: StoredEvalPlan }>(
+      'profile_upgrade_interview_preset',
+      { profileId: selectedId },
+    );
+    await refreshSelection(selectedId);
+    setSelectedVersion(upgraded.profile_version.version_hash);
+    setSelectedPlan(upgraded.eval_plan.content_hash);
+    toast.success('Interview lens upgraded to the v2 evidence-backed evaluation suite. It remains inactive until evaluated and activated.');
+  });
+
   const saveVersion = () => run(async () => {
     if (!selectedId) return;
     const version = await invoke<StoredProfileVersion>('profile_create_version', {
@@ -449,7 +461,14 @@ export function ExpertProfilesSettings() {
                   <p className="text-sm text-amber-700">Inactive draft — evaluation and activation required.</p>
                 )}
               </div>
-              <div className="flex gap-2">
+            <div className="flex gap-2">
+              {selectedProfile.name.toLowerCase() === 'interview'
+                && !selectedProfile.retired_at
+                && !plans.some(plan => plan.schema_version >= 2) && (
+                <Button variant="outline" onClick={upgradeInterviewLens} disabled={busy}>
+                  Upgrade to evaluation v2
+                </Button>
+              )}
                 <select
                   value={selectedVersion}
                   onChange={event => setSelectedVersion(event.target.value)}
@@ -696,7 +715,7 @@ function EvaluationView({
         {report.repetitions.map((result, resultIndex) => (
           <details key={`${result.target}:${result.case_id}:${result.repetition}`} className="rounded-md border p-3">
             <summary className="cursor-pointer text-sm font-medium">
-              {result.target} · {result.case_id} · run {result.repetition + 1}
+              {result.suite ?? 'depth'} · {result.target} · {result.case_id} · run {result.repetition + 1}
             </summary>
             {result.generation_error && <p className="mt-2 text-sm text-red-700">{result.generation_error}</p>}
             {result.output_markdown && <pre className="mt-3 whitespace-pre-wrap rounded bg-gray-50 p-3 text-xs">{result.output_markdown}</pre>}
@@ -707,6 +726,9 @@ function EvaluationView({
                 </p>
               ))}
             </div>
+            {result.advisory_findings?.map(finding => (
+              <p key={finding} className="mt-2 text-sm text-amber-700">Advisory · {finding}</p>
+            ))}
             {result.semantic.map(assertion => {
               const scoreIndex = scores.findIndex(score =>
                 score.target === result.target
@@ -719,7 +741,8 @@ function EvaluationView({
               }
               return (
                 <label key={assertion.assertion_index} className="mt-3 flex items-center gap-2 text-sm">
-                  Human score (0–1, threshold {assertion.threshold})
+                  {assertion.dimension ? `${assertion.dimension.replaceAll('_', ' ')} · ` : ''}
+                  Human score (0–1, threshold {assertion.threshold}{assertion.mandatory ? ', mandatory' : ''})
                   <input
                     type="number"
                     min="0"

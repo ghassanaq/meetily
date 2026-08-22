@@ -1246,6 +1246,7 @@ mod tests {
             model_binding_hash: binding_hash.clone(),
             eval_plan_hash: plan_hash.clone(),
             safety_gate_version: SAFETY_GATE_VERSION.to_string(),
+            safety_suite_hash: None,
         };
         EvaluationReport {
             qualifying: true,
@@ -1258,6 +1259,8 @@ mod tests {
             model_binding_hash: binding_hash,
             model_binding: Some(binding.clone()),
             safety_gate_version: SAFETY_GATE_VERSION.to_string(),
+            safety_suite_hash: None,
+            safety_passed: true,
             repetitions: Vec::new(),
             baseline_missing_playbooks: playbook_ids,
             removed_playbooks: Vec::new(),
