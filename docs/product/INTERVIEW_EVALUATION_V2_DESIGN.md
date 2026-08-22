@@ -439,5 +439,4 @@ remaining split stays independently reviewable:
    rule;
 5. rerun and activation decision.
 
-Task 1 has landed. No paid v2 run should be commissioned until tasks 2–4 make the fixtures
-satisfiable and split the deterministic safety gate from evidence-backed depth scoring.
+Tasks 1–4 have landed. The next permitted paid work is one explicitly non-qualifying v2 tuning run after the existing Interview lens is upgraded and the new immutable profile version and eval plan are selected. No qualifying comparison should be commissioned until that tuning pass is adjudicated and satisfiable.
