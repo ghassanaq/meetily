@@ -75,7 +75,7 @@ Extend Meetily with the following capabilities without removing its existing fea
 
 ## Current delivery status — 2026-08-22
 
-The working Meetily baseline, F8/F9 Live Assist capture, Interview lens, production Markdown context import bridge, DeepSeek/Kimi provider adapters, offline evaluation lifecycle, and Windows Provider Settings UI are implemented and locally committed. Provider Settings supports presets and custom OpenAI-compatible endpoints, secure Windows credential storage, bounded connection testing, explicit activation, safe replacement/removal, and active-provider display. OpenAI remains intentionally unconfigured until Ghassan supplies a key later.
+The working Meetily baseline, F8/F9 Live Assist capture, Interview lens, production Markdown context import bridge, OpenAI-compatible provider adapters, offline evaluation lifecycle, and Windows Provider Settings UI are implemented and locally committed. Provider Settings supports presets and custom OpenAI-compatible endpoints, secure Windows credential storage, bounded connection testing, explicit activation, safe replacement/removal, and active-provider display. Expert Profile evaluation now binds explicitly to one saved and currently tested Provider Settings record, shows the exact safe binding before a paid run, and persists that binding without storing or hashing the API key.
 
 The Kimi–DeepSeek comparison is complete. Both answers were grounded but too narrow for the broad `Tell us about yourself` prompt, and both returned Markdown formatting. The shared failure indicates a retrieval/composition defect rather than a provider-selection problem: literal token-overlap retrieval does not recognize a generic interview prompt as a request for broad career evidence.
 

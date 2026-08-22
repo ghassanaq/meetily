@@ -419,14 +419,19 @@ Provider provenance is **no longer an open item**. It is implementation task 1 b
 
 ## 9. Implementation boundary
 
-No implementation from this draft. The natural split, each independently reviewable:
+Implementation status: task 1 is complete in the implementation following this design. The
+remaining split stays independently reviewable:
 
-1. **Evaluator provider/model selection, with visible binding confirmation before a run
+1. **Complete — evaluator provider/model selection, with visible binding confirmation before a run
    starts.** Promoted to first because section 1.0 showed the evaluator silently ignores
    the Provider Settings UI. Until the binding is selectable and displayed, every paid run
    is unattributable and no other task's results can be trusted. Includes recording the
    real provider and model in `model_binding_hash`, and the full clearance tuple from
-   section 3.1.1.
+   section 3.1.1. The evaluator now requires a specific saved and currently tested Provider
+   Settings record; displays the record, endpoint, model, configuration and credential
+   revision, generation parameters, test time, and binding digest before confirmation; and
+   stores the safe binding payload in every report, including failures. API keys remain only
+   in secure credential storage and are never serialized or hashed.
 2. fixture schema with the evidence-contract set and full-input digest, plus validation,
    no runtime behaviour;
 3. the deterministic safety gate, with authority matching advisory;
@@ -434,4 +439,5 @@ No implementation from this draft. The natural split, each independently reviewa
    rule;
 5. rerun and activation decision.
 
-**No further paid run should be commissioned before task 1 lands.**
+Task 1 has landed. No paid v2 run should be commissioned until tasks 2–4 make the fixtures
+satisfiable and split the deterministic safety gate from evidence-backed depth scoring.
