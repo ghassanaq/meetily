@@ -100,6 +100,8 @@ pub struct EvaluationReport {
     pub baseline_capability_hash: Option<String>,
     pub eval_plan_hash: String,
     pub model_binding_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_binding: Option<ModelGenerationBinding>,
     pub safety_gate_version: String,
     pub repetitions: Vec<EvalRepetitionResult>,
     pub baseline_missing_playbooks: Vec<Uuid>,
@@ -464,6 +466,7 @@ pub async fn run_evaluation(
         baseline_capability_hash,
         eval_plan_hash,
         model_binding_hash,
+        model_binding: Some(request.model_binding.clone()),
         safety_gate_version: SAFETY_GATE_VERSION.to_string(),
         repetitions: results,
         baseline_missing_playbooks,
@@ -907,11 +910,16 @@ mod tests {
         ModelGenerationBinding {
             provider: "custom-openai".to_string(),
             model: "test-model".to_string(),
+            provider_record_id: None,
+            provider_configuration_hash: None,
+            credential_revision: None,
             model_artifact_hash: None,
             endpoint_fingerprint: Some("sha256:test-endpoint".to_string()),
             generation_parameters: GenerationParameters {
                 temperature: 0.0,
+                top_p: None,
                 max_tokens: 1024,
+                reasoning_effort: None,
             },
             prompt_renderer_hash: prompt_renderer_hash(),
             output_parser_version: super::super::rendering::OUTPUT_PARSER_VERSION,

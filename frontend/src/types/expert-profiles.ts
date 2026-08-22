@@ -25,8 +25,34 @@ export interface StoredEvalPlan {
 export interface ModelGenerationBinding {
   provider: string;
   model: string;
+  provider_record_id: string | null;
+  provider_configuration_hash: string | null;
+  credential_revision: number | null;
+  model_artifact_hash: string | null;
+  endpoint_fingerprint: string | null;
+  generation_parameters: {
+    temperature: number;
+    top_p?: number | null;
+    max_tokens: number;
+    reasoning_effort?: string | null;
+  };
   prompt_renderer_hash: string;
   output_parser_version: number;
+}
+
+export interface EvaluationProviderBindingView {
+  providerRecordId: string;
+  displayName: string;
+  providerKind: string;
+  endpoint: string;
+  endpointFingerprint: string;
+  providerConfigurationHash: string;
+  credentialRevision: number;
+  model: string;
+  lastTestedAt: string;
+  requiresCloudConsent: boolean;
+  generationParameters: ModelGenerationBinding['generation_parameters'];
+  modelBindingHash: string;
 }
 
 export interface ProfileActivationView {
@@ -68,6 +94,7 @@ export interface EvaluationReport {
   candidate_capability_hash: string;
   eval_plan_hash: string;
   model_binding_hash: string;
+  model_binding: ModelGenerationBinding | null;
   safety_gate_version: string;
   repetitions: EvalRepetitionResult[];
   baseline_missing_playbooks: string[];

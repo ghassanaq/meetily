@@ -184,6 +184,12 @@ pub enum HardRegressionRule {
 pub struct ModelGenerationBinding {
     pub provider: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_record_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_configuration_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_revision: Option<i64>,
     pub model_artifact_hash: Option<String>,
     pub endpoint_fingerprint: Option<String>,
     pub generation_parameters: GenerationParameters,
@@ -195,7 +201,11 @@ pub struct ModelGenerationBinding {
 #[serde(deny_unknown_fields)]
 pub struct GenerationParameters {
     pub temperature: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
     pub max_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -207,4 +217,53 @@ pub struct EffectiveCapabilityRevision {
     pub model_binding_hash: String,
     pub eval_plan_hash: String,
     pub safety_gate_version: String,
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+    use crate::expert_profiles::hashing::hash_model_binding;
+
+    #[test]
+    fn legacy_binding_payload_round_trips_without_new_empty_fields() {
+        let legacy = serde_json::json!({
+            "provider": "custom-openai",
+            "model": "model-a",
+            "model_artifact_hash": null,
+            "endpoint_fingerprint": "sha256:endpoint",
+            "generation_parameters": {
+                "temperature": 0.0,
+                "max_tokens": 2048
+            },
+            "prompt_renderer_hash": "sha256:renderer",
+            "output_parser_version": 1
+        });
+        let binding: ModelGenerationBinding = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(binding).unwrap(), legacy);
+    }
+
+    #[test]
+    fn managed_provider_revision_changes_the_binding_hash() {
+        let mut binding = ModelGenerationBinding {
+            provider: "openai".to_string(),
+            model: "gpt-test".to_string(),
+            provider_record_id: Some(Uuid::nil().to_string()),
+            provider_configuration_hash: Some("config-a".to_string()),
+            credential_revision: Some(1),
+            model_artifact_hash: None,
+            endpoint_fingerprint: Some("sha256:endpoint".to_string()),
+            generation_parameters: GenerationParameters {
+                temperature: 0.0,
+                top_p: None,
+                max_tokens: 2048,
+                reasoning_effort: None,
+            },
+            prompt_renderer_hash: "sha256:renderer".to_string(),
+            output_parser_version: 1,
+        };
+        let first = hash_model_binding(&binding).unwrap();
+        binding.credential_revision = Some(2);
+        binding.provider_configuration_hash = Some("config-b".to_string());
+        assert_ne!(first, hash_model_binding(&binding).unwrap());
+    }
 }

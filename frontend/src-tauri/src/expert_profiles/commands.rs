@@ -19,6 +19,7 @@ use crate::database::repositories::expert_profile::{
 use crate::database::repositories::meeting::MeetingsRepository;
 use crate::database::repositories::setting::SettingsRepository;
 use crate::database::repositories::summary::SummaryProcessesRepository;
+use crate::live_assist::provider_settings;
 use crate::state::AppState;
 use crate::summary::llm_client::LLMProvider;
 
@@ -110,6 +111,7 @@ pub struct ProfileEvalArgs {
     pub profile_version_hash: String,
     pub plan_id: Uuid,
     pub plan_hash: String,
+    pub provider_id: String,
     pub qualifying: bool,
     #[serde(default)]
     pub confirmed_removed_playbooks: Vec<Uuid>,
@@ -146,9 +148,9 @@ fn register_evaluation(
     run_id: Uuid,
 ) -> Result<(CancellationToken, EvaluationRegistration), ProfileCommandError> {
     let token = CancellationToken::new();
-    let mut registry = EVALUATION_CANCELLATIONS
-        .lock()
-        .map_err(|_| ProfileCommandError::new("EVAL_FAILED", "evaluation registry is unavailable"))?;
+    let mut registry = EVALUATION_CANCELLATIONS.lock().map_err(|_| {
+        ProfileCommandError::new("EVAL_FAILED", "evaluation registry is unavailable")
+    })?;
     if registry.contains_key(&run_id) {
         return Err(ProfileCommandError::new(
             "EVAL_FAILED",
@@ -209,6 +211,23 @@ pub struct ProfileActivationView {
     pub binding: ModelGenerationBinding,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluationProviderBindingView {
+    pub provider_record_id: String,
+    pub display_name: String,
+    pub provider_kind: String,
+    pub endpoint: String,
+    pub endpoint_fingerprint: String,
+    pub provider_configuration_hash: String,
+    pub credential_revision: i64,
+    pub model: String,
+    pub last_tested_at: String,
+    pub requires_cloud_consent: bool,
+    pub generation_parameters: GenerationParameters,
+    pub model_binding_hash: String,
+}
+
 struct ResolvedProvider {
     provider: LLMProvider,
     model: String,
@@ -221,6 +240,42 @@ struct ResolvedProvider {
     token_threshold: usize,
     app_data_dir: PathBuf,
     binding: ModelGenerationBinding,
+}
+
+#[tauri::command]
+pub async fn profile_get_eval_binding<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+) -> Result<EvaluationProviderBindingView, ProfileCommandError> {
+    let pool = state.db_manager.pool();
+    let resolved = resolve_evaluation_provider(&app, pool, &provider_id, true).await?;
+    let managed = provider_settings::load_tested_config(pool, &provider_id)
+        .await
+        .map_err(|error| ProfileCommandError::new("PROVIDER_UNAVAILABLE", error.to_string()))?;
+    let endpoint_fingerprint = resolved
+        .binding
+        .endpoint_fingerprint
+        .clone()
+        .ok_or_else(|| {
+            ProfileCommandError::new("DIGEST_MISMATCH", "endpoint fingerprint is missing")
+        })?;
+    let model_binding_hash = super::hashing::hash_model_binding(&resolved.binding)
+        .map_err(|error| ProfileCommandError::new("DIGEST_MISMATCH", error.to_string()))?;
+    Ok(EvaluationProviderBindingView {
+        provider_record_id: managed.id,
+        display_name: managed.display_name,
+        provider_kind: managed.provider_kind,
+        endpoint: managed.endpoint.clone(),
+        endpoint_fingerprint,
+        provider_configuration_hash: managed.configuration_hash,
+        credential_revision: managed.credential_revision,
+        model: managed.model,
+        last_tested_at: managed.last_tested_at,
+        requires_cloud_consent: !endpoint_is_local(&managed.endpoint),
+        generation_parameters: resolved.binding.generation_parameters,
+        model_binding_hash,
+    })
 }
 
 #[tauri::command]
@@ -258,8 +313,7 @@ pub async fn profile_create_interview_preset(
     let pool = state.db_manager.pool();
     let existing = ExpertProfilesRepository::list_profiles(pool).await?;
     if existing.iter().any(|profile| {
-        profile.retired_at.is_none()
-            && profile.name.eq_ignore_ascii_case(INTERVIEW_PRESET_NAME)
+        profile.retired_at.is_none() && profile.name.eq_ignore_ascii_case(INTERVIEW_PRESET_NAME)
     }) {
         return Err(ProfileCommandError::new(
             "ALREADY_EXISTS",
@@ -274,11 +328,7 @@ pub async fn profile_create_interview_preset(
     let profile_id = Uuid::new_v4();
     let plan_id = Uuid::new_v4();
     let (profile_version, eval_plan) = ExpertProfilesRepository::create_profile_with_plan(
-        pool,
-        profile_id,
-        plan_id,
-        &profile,
-        &plan,
+        pool, profile_id, plan_id, &profile, &plan,
     )
     .await?;
     Ok(ProfileCreateResponse {
@@ -449,7 +499,8 @@ pub async fn profile_run_evals<R: Runtime>(
         Some(_) => Some(candidate.clone()),
         None => None,
     };
-    let resolved = resolve_provider(&app, pool, args.cloud_consent).await?;
+    let resolved =
+        resolve_evaluation_provider(&app, pool, &args.provider_id, args.cloud_consent).await?;
     let client = reqwest::Client::builder()
         .connect_timeout(EVALUATION_CONNECT_TIMEOUT)
         .timeout(EVALUATION_HTTP_TIMEOUT)
@@ -506,9 +557,9 @@ pub async fn profile_run_evals<R: Runtime>(
 
 #[tauri::command]
 pub fn profile_cancel_eval(run_id: Uuid) -> Result<bool, ProfileCommandError> {
-    let registry = EVALUATION_CANCELLATIONS
-        .lock()
-        .map_err(|_| ProfileCommandError::new("EVAL_FAILED", "evaluation registry is unavailable"))?;
+    let registry = EVALUATION_CANCELLATIONS.lock().map_err(|_| {
+        ProfileCommandError::new("EVAL_FAILED", "evaluation registry is unavailable")
+    })?;
     if let Some(token) = registry.get(&run_id) {
         token.cancel();
         Ok(true)
@@ -546,9 +597,12 @@ pub async fn profile_activate<R: Runtime>(
     profile_id: Uuid,
     eval_run_id: i64,
     expected_previous_capability_hash: Option<String>,
+    provider_id: String,
     cloud_consent: bool,
 ) -> Result<StoredProfileActivation, ProfileCommandError> {
-    let resolved = resolve_provider(&app, state.db_manager.pool(), cloud_consent).await?;
+    let _ = cloud_consent;
+    let resolved =
+        resolve_evaluation_provider(&app, state.db_manager.pool(), &provider_id, true).await?;
     Ok(ExpertProfilesRepository::activate_profile(
         state.db_manager.pool(),
         profile_id,
@@ -590,7 +644,7 @@ pub async fn summary_generate_with_profile<R: Runtime>(
     args: ProfileSummaryArgs,
 ) -> Result<ProfileSummaryResponse, ProfileCommandError> {
     let pool = state.db_manager.pool();
-    let resolved = resolve_provider(&app, pool, args.cloud_consent).await?;
+    let resolved = resolve_summary_provider(&app, pool, args.cloud_consent).await?;
     let activation = match ExpertProfilesRepository::require_active_binding(
         pool,
         args.profile_id,
@@ -710,7 +764,59 @@ fn bundle_error(error: BundleError) -> ProfileCommandError {
     ProfileCommandError::new(code, error.to_string())
 }
 
-async fn resolve_provider<R: Runtime>(
+async fn resolve_evaluation_provider<R: Runtime>(
+    app: &AppHandle<R>,
+    pool: &sqlx::SqlitePool,
+    provider_id: &str,
+    cloud_consent: bool,
+) -> Result<ResolvedProvider, ProfileCommandError> {
+    let managed = provider_settings::load_tested_config(pool, provider_id)
+        .await
+        .map_err(|error| ProfileCommandError::new("PROVIDER_UNAVAILABLE", error.to_string()))?;
+    if !endpoint_is_local(&managed.endpoint) && !cloud_consent {
+        return Err(ProfileCommandError::new(
+            "CLOUD_CONSENT_REQUIRED",
+            "evaluation would send synthetic evaluation text to the selected remote provider",
+        ));
+    }
+    let endpoint_fingerprint =
+        hash_serializable(b"meetily-provider-endpoint-v1\0", &managed.endpoint)
+            .map_err(|error| ProfileCommandError::new("DIGEST_MISMATCH", error.to_string()))?;
+    let provider = LLMProvider::CustomOpenAI;
+    let token_threshold = provider_token_threshold(&provider, &managed.model);
+    let binding = ModelGenerationBinding {
+        provider: managed.provider_kind.clone(),
+        model: managed.model.clone(),
+        provider_record_id: Some(managed.id.clone()),
+        provider_configuration_hash: Some(managed.configuration_hash),
+        credential_revision: Some(managed.credential_revision),
+        model_artifact_hash: None,
+        endpoint_fingerprint: Some(endpoint_fingerprint),
+        generation_parameters: GenerationParameters {
+            temperature: 0.0,
+            top_p: None,
+            max_tokens: 2048,
+            reasoning_effort: None,
+        },
+        prompt_renderer_hash: prompt_renderer_hash(),
+        output_parser_version: OUTPUT_PARSER_VERSION,
+    };
+    Ok(ResolvedProvider {
+        provider,
+        model: managed.model,
+        api_key: managed.api_key,
+        ollama_endpoint: None,
+        custom_openai_endpoint: Some(managed.endpoint),
+        max_tokens: None,
+        temperature: None,
+        top_p: None,
+        token_threshold,
+        app_data_dir: app.state::<AppPaths>().root().to_path_buf(),
+        binding,
+    })
+}
+
+async fn resolve_summary_provider<R: Runtime>(
     app: &AppHandle<R>,
     pool: &sqlx::SqlitePool,
     cloud_consent: bool,
@@ -809,11 +915,16 @@ async fn resolve_provider<R: Runtime>(
     let binding = ModelGenerationBinding {
         provider: config.provider,
         model: model.clone(),
+        provider_record_id: None,
+        provider_configuration_hash: None,
+        credential_revision: None,
         model_artifact_hash,
         endpoint_fingerprint,
         generation_parameters: GenerationParameters {
             temperature: f64::from(temperature.unwrap_or(0.0)),
+            top_p: top_p.map(f64::from),
             max_tokens: max_tokens.unwrap_or(2048),
+            reasoning_effort: None,
         },
         prompt_renderer_hash: prompt_renderer_hash(),
         output_parser_version: OUTPUT_PARSER_VERSION,

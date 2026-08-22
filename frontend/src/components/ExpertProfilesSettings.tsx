@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import type {
+  EvaluationProviderBindingView,
   EvaluationReport,
   ExpertProfileSummary,
   ProfileActivationView,
@@ -32,6 +33,18 @@ interface ProfileEvaluationProgress {
   repetition: number | null;
 }
 
+interface ProviderSummary {
+  id: string;
+  displayName: string;
+  providerKind: string;
+  endpoint: string;
+  model: string;
+  isActive: boolean;
+  keyConfigured: boolean;
+  lastTestedAt: string | null;
+  testCurrent: boolean;
+}
+
 export function ExpertProfilesSettings() {
   const [profiles, setProfiles] = useState<ExpertProfileSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -44,6 +57,11 @@ export function ExpertProfilesSettings() {
   const [planJson, setPlanJson] = useState('');
   const [bundleJson, setBundleJson] = useState('');
   const [cloudConsent, setCloudConsent] = useState(false);
+  const [providers, setProviders] = useState<ProviderSummary[]>([]);
+  const [selectedProviderId, setSelectedProviderId] = useState('');
+  const [evaluationBinding, setEvaluationBinding] = useState<EvaluationProviderBindingView | null>(null);
+  const [bindingConfirmed, setBindingConfirmed] = useState(false);
+  const [evaluatedProviderId, setEvaluatedProviderId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [evaluation, setEvaluation] = useState<ProfileEvalResponse | null>(null);
   const [scores, setScores] = useState<SemanticScore[]>([]);
@@ -87,7 +105,26 @@ export function ExpertProfilesSettings() {
 
   useEffect(() => {
     refreshProfiles().catch(error => toast.error(formatError(error)));
+    invoke<ProviderSummary[]>('live_assist_provider_list')
+      .then(rows => {
+        setProviders(rows);
+        const preferred = rows.find(provider => provider.isActive && provider.testCurrent)
+          ?? rows.find(provider => provider.testCurrent);
+        setSelectedProviderId(preferred?.id ?? '');
+      })
+      .catch(error => toast.error(formatError(error)));
   }, [refreshProfiles]);
+
+  useEffect(() => {
+    setBindingConfirmed(false);
+    setEvaluationBinding(null);
+    if (!selectedProviderId) return;
+    invoke<EvaluationProviderBindingView>('profile_get_eval_binding', {
+      providerId: selectedProviderId,
+    })
+      .then(setEvaluationBinding)
+      .catch(error => toast.error(formatError(error)));
+  }, [selectedProviderId]);
 
   useEffect(() => {
     let disposed = false;
@@ -189,7 +226,11 @@ export function ExpertProfilesSettings() {
   });
 
   const runEvaluation = () => {
-    if (!selectedId || !selectedVersion || !selectedPlan) return;
+    if (!selectedId || !selectedVersion || !selectedPlan || !evaluationBinding || !bindingConfirmed) return;
+    if (evaluationBinding.requiresCloudConsent && !cloudConsent) {
+      toast.error('Confirm remote-provider consent before starting this evaluation.');
+      return;
+    }
     const runId = crypto.randomUUID();
     evaluationRunIdRef.current = runId;
     setEvaluationRunId(runId);
@@ -206,6 +247,7 @@ export function ExpertProfilesSettings() {
             profile_version_hash: selectedVersion,
             plan_id: plan.id,
             plan_hash: selectedPlan,
+            provider_id: evaluationBinding.providerRecordId,
             qualifying: true,
             confirmed_removed_playbooks: confirmedRemovedPlaybooks,
             adjudications: [],
@@ -213,6 +255,7 @@ export function ExpertProfilesSettings() {
           },
         });
         setEvaluation(result);
+        setEvaluatedProviderId(result.report.model_binding?.provider_record_id ?? null);
         setScores(semanticScoreRows(result.report));
         toast.success(`Evaluation completed: ${result.report.outcome}.`);
       } finally {
@@ -267,11 +310,12 @@ export function ExpertProfilesSettings() {
   });
 
   const activate = () => run(async () => {
-    if (!selectedId || !evaluation) return;
+    if (!selectedId || !evaluation || !evaluatedProviderId) return;
     await invoke('profile_activate', {
       profileId: selectedId,
       evalRunId: evaluation.run.id,
       expectedPreviousCapabilityHash: activation?.activation.capability_revision_hash ?? null,
+      providerId: evaluatedProviderId,
       cloudConsent,
     });
     await refreshSelection(selectedId);
@@ -386,7 +430,7 @@ export function ExpertProfilesSettings() {
             onChange={event => setCloudConsent(event.target.checked)}
             className="mt-1"
           />
-          <span>Allow this run to send synthetic evaluation text to the configured remote provider.</span>
+          <span>Allow this run to send synthetic evaluation text to the explicitly selected remote provider.</span>
         </label>
       </aside>
 
@@ -458,10 +502,60 @@ export function ExpertProfilesSettings() {
             <p className="text-sm text-gray-600">A non-empty synthetic suite is mandatory. Application safety fixtures are added automatically.</p>
           </div>
           <Textarea value={planJson} onChange={event => setPlanJson(event.target.value)} rows={14} className="font-mono text-xs" placeholder="Paste strict target-free EvalPlan JSON" />
+          <div className="space-y-3 rounded-md border border-blue-200 bg-blue-50 p-3">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <label className="min-w-64 flex-1 text-sm font-medium text-blue-950">
+                Evaluation provider
+                <select
+                  value={selectedProviderId}
+                  onChange={event => setSelectedProviderId(event.target.value)}
+                  disabled={busy}
+                  className="mt-1 block w-full rounded-md border bg-white px-3 py-2 text-sm text-gray-950"
+                >
+                  <option value="">Select a tested Provider Settings record</option>
+                  {providers.map(provider => (
+                    <option key={provider.id} value={provider.id} disabled={!provider.testCurrent || !provider.keyConfigured}>
+                      {provider.displayName} · {provider.model}{provider.isActive ? ' · active in Live Assist' : ''}{provider.testCurrent ? '' : ' · test required'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {evaluationBinding ? (
+              <div className="space-y-2 text-sm text-blue-950">
+                <p className="font-semibold">Exact paid-run binding</p>
+                <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-[10rem_1fr]">
+                  <dt>Provider record</dt><dd className="break-all font-mono text-xs">{evaluationBinding.providerRecordId}</dd>
+                  <dt>Provider / model</dt><dd>{evaluationBinding.displayName} · {evaluationBinding.providerKind} · <code>{evaluationBinding.model}</code></dd>
+                  <dt>Endpoint</dt><dd className="break-all"><code>{evaluationBinding.endpoint}</code></dd>
+                  <dt>Configuration</dt><dd className="break-all font-mono text-xs">revision {evaluationBinding.credentialRevision} · {evaluationBinding.providerConfigurationHash}</dd>
+                  <dt>Binding digest</dt><dd className="break-all font-mono text-xs">{evaluationBinding.modelBindingHash}</dd>
+                  <dt>Generation</dt><dd>{formatGenerationParameters(evaluationBinding.generationParameters)}</dd>
+                  <dt>Connection tested</dt><dd>{new Date(evaluationBinding.lastTestedAt).toLocaleString()}</dd>
+                </dl>
+                <label className="flex items-start gap-2 rounded border border-blue-300 bg-white p-2">
+                  <input
+                    type="checkbox"
+                    checked={bindingConfirmed}
+                    onChange={event => setBindingConfirmed(event.target.checked)}
+                    disabled={busy}
+                    className="mt-1"
+                  />
+                  <span>I confirm this exact provider, endpoint, model, and configuration will be used and billed for this evaluation.</span>
+                </label>
+              </div>
+            ) : (
+              <p className="text-sm text-amber-800">
+                {providers.length === 0
+                  ? 'No Provider Settings records exist. Add and test one in Settings → Providers first.'
+                  : 'Select a provider whose current connection test passed.'}
+              </p>
+            )}
+          </div>
           <div className="flex flex-wrap gap-2">
             {!selectedId && <Button onClick={createProfile} disabled={busy || !profileJson.trim() || !planJson.trim()}>Create profile and plan</Button>}
             {selectedId && <Button variant="outline" onClick={storePlan} disabled={busy || !planJson.trim()}>Store new eval plan</Button>}
-            {selectedId && <Button onClick={runEvaluation} disabled={busy || !selectedVersion || !selectedPlan}>Run qualifying evaluation</Button>}
+            {selectedId && <Button onClick={runEvaluation} disabled={busy || !selectedVersion || !selectedPlan || !evaluationBinding || !bindingConfirmed || (evaluationBinding.requiresCloudConsent && !cloudConsent)}>Run qualifying evaluation</Button>}
           </div>
           {evaluationRunId && (
             <div className="space-y-2 rounded-md border border-blue-200 bg-blue-50 p-3" role="status" aria-live="polite">
@@ -553,6 +647,11 @@ function EvaluationView({
         <div>
           <h3 className="font-semibold">Evaluation: {report.outcome}</h3>
           <p className="text-sm text-gray-600">{report.safety_gate_version} · {report.repetitions.length} generated samples</p>
+          {report.model_binding && (
+            <p className="text-xs text-gray-500">
+              Bound to {report.model_binding.provider}/{report.model_binding.model} · record {report.model_binding.provider_record_id ?? 'legacy'} · {report.model_binding_hash}
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
           {scores.length > 0 && <Button variant="outline" onClick={onAdjudicate} disabled={busy}>Save human scores</Button>}
@@ -655,6 +754,18 @@ function semanticScoreRows(report: EvaluationReport): SemanticScore[] {
     assertionIndex: assertion.assertion_index,
     score: assertion.score?.toString() ?? '',
     })));
+}
+
+function formatGenerationParameters(
+  parameters: EvaluationProviderBindingView['generationParameters'],
+): string {
+  const values = [
+    `temperature=${parameters.temperature}`,
+    `top_p=${parameters.top_p ?? 'provider default'}`,
+    `max_tokens=${parameters.max_tokens}`,
+    `reasoning_effort=${parameters.reasoning_effort ?? 'provider default'}`,
+  ];
+  return values.join(' · ');
 }
 
 function formatError(error: unknown): string {

@@ -758,6 +758,7 @@ pub fn run() {
             expert_profiles::commands::profile_get,
             expert_profiles::commands::profile_get_eval_plan,
             expert_profiles::commands::profile_get_activation,
+            expert_profiles::commands::profile_get_eval_binding,
             expert_profiles::commands::profile_export,
             expert_profiles::commands::profile_import,
             expert_profiles::commands::profile_run_evals,

@@ -93,6 +93,19 @@ pub(crate) struct ActiveProviderDescriptor {
     pub model: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedProviderConfig {
+    pub id: String,
+    pub display_name: String,
+    pub provider_kind: String,
+    pub endpoint: String,
+    pub model: String,
+    pub api_key: String,
+    pub credential_revision: i64,
+    pub configuration_hash: String,
+    pub last_tested_at: String,
+}
+
 impl ActiveProviderDescriptor {
     fn from_record(record: &ProviderRecord) -> Self {
         Self {
@@ -134,6 +147,38 @@ pub(crate) async fn load_active_config(
         endpoint: record.endpoint,
         api_key,
         model: record.model,
+    })
+}
+
+pub(crate) async fn load_tested_config(
+    pool: &SqlitePool,
+    provider_id: &str,
+) -> Result<ManagedProviderConfig> {
+    let id = validate_id(provider_id)?;
+    let record = get_record(pool, &id)
+        .await?
+        .ok_or_else(|| anyhow!("the selected evaluation provider no longer exists"))?;
+    let api_key = credential_store::read(&id)?
+        .ok_or_else(|| anyhow!("the selected evaluation provider has no saved API key"))?;
+    let config_hash = configuration_hash(&record);
+    if record.last_tested_config_hash.as_deref() != Some(&config_hash) {
+        return Err(anyhow!(
+            "Test Connection must succeed for the selected endpoint, model, and key before evaluation"
+        ));
+    }
+    let last_tested_at = record.last_tested_at.clone().ok_or_else(|| {
+        anyhow!("the selected evaluation provider has no successful connection test")
+    })?;
+    Ok(ManagedProviderConfig {
+        id: record.id,
+        display_name: record.display_name,
+        provider_kind: record.provider_kind,
+        endpoint: record.endpoint,
+        model: record.model,
+        api_key,
+        credential_revision: record.credential_revision,
+        configuration_hash: config_hash,
+        last_tested_at,
     })
 }
 
